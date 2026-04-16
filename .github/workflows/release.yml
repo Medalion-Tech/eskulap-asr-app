@@ -105,13 +105,29 @@ jobs:
           releaseBody: |
             ## Instalacja
 
-            **macOS (Apple Silicon)** — pobierz `.dmg` z `macos-arm64`
-            **macOS (Intel)** — pobierz `.dmg` z `macos-x64`
-            **Windows** — pobierz instalator `.exe` (NSIS)
-            **Linux (Omarchy / Arch / Ubuntu)** — pobierz `.AppImage`, `chmod +x`, uruchom
+            **macOS (Apple Silicon)** — `Eskulap.ASR_0.1.0_aarch64.dmg`
+            **macOS (Intel)** — `Eskulap.ASR_0.1.0_x64.dmg`
+            **Windows** — `Eskulap.ASR_0.1.0_x64-setup.exe` (NSIS)
+            **Linux (Omarchy / Arch / Ubuntu)** — `.AppImage` (`chmod +x`, uruchom)
 
-            > Aplikacja nie jest podpisana. Na macOS: prawym przyciskiem → Otwórz.
-            > Na Windows: "Więcej informacji" → "Uruchom mimo to".
+            ### macOS — ważne
+
+            Aplikacja jest **ad-hoc signed** (bez certyfikatu Apple Developer).
+
+            Jeśli przy otwieraniu pojawi się "Eskulap ASR jest uszkodzona" —
+            otwórz Terminal i wykonaj:
+
+            ```bash
+            xattr -cr "/Applications/Eskulap ASR.app"
+            ```
+
+            Potem prawym przyciskiem → **Otwórz**.
+
+            ### Windows
+
+            SmartScreen: "Więcej informacji" → "Uruchom mimo to".
+
+            ---
 
             Przy pierwszym uruchomieniu aplikacja pobiera model ASR (~800 MB).
 
