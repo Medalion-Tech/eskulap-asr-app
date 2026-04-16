@@ -44,6 +44,7 @@ pub fn run() {
             commands::check_model_exists,
             commands::download_model,
             commands::load_model,
+            commands::get_accelerator_info,
             commands::start_recording,
             commands::stop_recording,
             commands::get_audio_levels,

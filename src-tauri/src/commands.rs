@@ -2,8 +2,103 @@ use crate::model_manager::{self, DownloadProgress};
 use crate::notes::{Note, NotesStore};
 use crate::recorder::{AudioRecorder, LevelHistory};
 use crate::whisper_engine::WhisperEngine;
+use serde::Serialize;
 use std::sync::Mutex;
 use tauri::ipc::Channel;
+
+#[derive(Serialize)]
+pub struct AcceleratorInfo {
+    pub backend: String,
+    pub platform: String,
+    pub arch: String,
+    pub threads: i32,
+    pub cpu_model: String,
+}
+
+#[tauri::command]
+pub fn get_accelerator_info() -> AcceleratorInfo {
+    let backend = if cfg!(target_os = "macos") {
+        "Metal".to_string()
+    } else {
+        "CPU".to_string()
+    };
+
+    let platform = if cfg!(target_os = "macos") {
+        "macOS".to_string()
+    } else if cfg!(target_os = "windows") {
+        "Windows".to_string()
+    } else if cfg!(target_os = "linux") {
+        "Linux".to_string()
+    } else {
+        "unknown".to_string()
+    };
+
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64".to_string()
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64".to_string()
+    } else {
+        "unknown".to_string()
+    };
+
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(4)
+        .min(8);
+
+    let cpu_model = detect_cpu_model();
+
+    AcceleratorInfo {
+        backend,
+        platform,
+        arch,
+        threads,
+        cpu_model,
+    }
+}
+
+fn detect_cpu_model() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("model name") {
+                    if let Some((_, v)) = rest.split_once(':') {
+                        return v.trim().to_string();
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(out) = std::process::Command::new("wmic")
+            .args(["cpu", "get", "name"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines().skip(1) {
+                let t = line.trim();
+                if !t.is_empty() {
+                    return t.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
 
 pub struct WhisperState(pub Mutex<Option<WhisperEngine>>);
 pub struct RecorderState(pub Mutex<Option<AudioRecorder>>);

@@ -1,35 +1,60 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
   import { MODEL_REPO, MODEL_QUANTIZATION } from "./model-info";
+
+  interface AcceleratorInfo {
+    backend: string;
+    platform: string;
+    arch: string;
+    threads: number;
+    cpu_model: string;
+  }
+
+  let accel: AcceleratorInfo | null = $state(null);
+
+  onMount(async () => {
+    try {
+      accel = await invoke<AcceleratorInfo>("get_accelerator_info");
+    } catch (e) {
+      console.error("Failed to get accelerator info:", e);
+    }
+  });
+
+  const isGpu = $derived(accel?.backend === "Metal");
+  const tooltip = $derived(
+    accel
+      ? `${accel.platform} ${accel.arch}${accel.cpu_model ? ` · ${accel.cpu_model}` : ""} · ${accel.threads} wątków`
+      : ""
+  );
 </script>
 
 <header class="app-header">
   <div class="title-group">
     <span class="app-name">Eskulap ASR</span>
   </div>
-  <a
-    class="model-info"
-    href="https://huggingface.co/{MODEL_REPO}"
-    target="_blank"
-    rel="noreferrer"
-    title="Otwórz stronę modelu na HuggingFace"
-  >
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+  <div class="right">
+    {#if accel}
+      <span
+        class="accel-badge"
+        class:gpu={isGpu}
+        title={tooltip}
+      >
+        <span class="accel-dot"></span>
+        {accel.backend}
+      </span>
+    {/if}
+    <a
+      class="model-info"
+      href="https://huggingface.co/{MODEL_REPO}"
+      target="_blank"
+      rel="noreferrer"
+      title="Otwórz stronę modelu na HuggingFace"
     >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="16" x2="12" y2="12" />
-      <line x1="12" y1="8" x2="12.01" y2="8" />
-    </svg>
-    <span class="model-name">{MODEL_REPO}</span>
-    <span class="model-quant">{MODEL_QUANTIZATION}</span>
-  </a>
+      <span class="model-name">{MODEL_REPO}</span>
+      <span class="model-quant">{MODEL_QUANTIZATION}</span>
+    </a>
+  </div>
 </header>
 
 <style>
@@ -57,6 +82,49 @@
     font-weight: 600;
     color: var(--text);
     letter-spacing: -0.01em;
+  }
+
+  .right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .accel-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--bg-subtle);
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+    cursor: default;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .accel-badge.gpu {
+    color: var(--accent-text);
+    background: var(--accent-soft-bg);
+    border-color: var(--accent-soft-border);
+  }
+
+  .accel-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .accel-badge.gpu .accel-dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
   }
 
   .model-info {
