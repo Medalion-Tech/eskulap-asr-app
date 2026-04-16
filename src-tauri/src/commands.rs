@@ -64,7 +64,7 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
         };
         return ("Metal".to_string(), device);
     }
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
         // Try enumerating Vulkan devices; fall back to CPU if none
         let devices = std::panic::catch_unwind(whisper_rs::vulkan::list_devices)
@@ -72,6 +72,10 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
         if let Some(first) = devices.into_iter().next() {
             return ("Vulkan".to_string(), first.name);
         }
+        return ("CPU".to_string(), cpu_model.to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
         return ("CPU".to_string(), cpu_model.to_string());
     }
     #[allow(unreachable_code)]
