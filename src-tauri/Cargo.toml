@@ -34,5 +34,8 @@ hex = "0.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
 
-[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 whisper-rs = { version = "0.16", features = ["vulkan"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+whisper-rs = { version = "0.16", features = ["cuda"] }

@@ -79,20 +79,13 @@ jobs:
             libasound2-dev \
             vulkan-sdk
 
-      - name: Setup MSVC dev environment (Windows)
+      - name: Install CUDA Toolkit (Windows)
         if: startsWith(matrix.platform, 'windows')
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Ninja (Windows)
-        if: startsWith(matrix.platform, 'windows')
-        uses: seanmiddleditch/gha-setup-ninja@v5
-
-      - name: Install Vulkan SDK (Windows)
-        if: startsWith(matrix.platform, 'windows')
-        uses: humbletim/install-vulkan-sdk@v1.2
+        uses: Jimver/cuda-toolkit@v0.2.19
         with:
-          version: 1.3.290.0
-          cache: true
+          cuda: '12.5.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "curand", "curand_dev", "cuda_profiler_api"]'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -122,12 +115,8 @@ jobs:
         if: startsWith(matrix.platform, 'windows')
         shell: bash
         run: |
-          echo "CMAKE_GENERATOR=Ninja" >> $GITHUB_ENV
-          # Use embedded debug info (/Z7) instead of /Zi — avoids PDB file
-          # contention when multiple cl.exe run in parallel under Ninja.
-          echo "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded" >> $GITHUB_ENV
-          echo "CFLAGS=/Z7" >> $GITHUB_ENV
-          echo "CXXFLAGS=/Z7" >> $GITHUB_ENV
+          # Ensure CUDA architectures are set (support common GeForce cards)
+          echo "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90" >> $GITHUB_ENV
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -160,6 +149,14 @@ jobs:
             ### Windows
 
             SmartScreen: "Więcej informacji" → "Uruchom mimo to".
+
+            GPU: Wymaga NVIDIA GPU + [CUDA Runtime 12.x](https://www.nvidia.com/Download/index.aspx).
+            Bez CUDA — aplikacja i tak działa, ale na CPU.
+
+            ### Linux
+
+            GPU: dowolna karta ze sterownikiem Vulkan (NVIDIA/AMD/Intel).
+            Na Arch/Omarchy: `sudo pacman -S vulkan-intel` (lub `vulkan-radeon` / `nvidia-utils`).
 
             ---
 

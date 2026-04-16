@@ -64,13 +64,31 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
         };
         return ("Metal".to_string(), device);
     }
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
-        // Try enumerating Vulkan devices; fall back to CPU if none
         let devices = std::panic::catch_unwind(whisper_rs::vulkan::list_devices)
             .unwrap_or_default();
         if let Some(first) = devices.into_iter().next() {
             return ("Vulkan".to_string(), first.name);
+        }
+        return ("CPU".to_string(), cpu_model.to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Try nvidia-smi to detect CUDA-capable GPU
+        if let Ok(out) = std::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=name", "--format=csv,noheader"])
+            .output()
+        {
+            if out.status.success() {
+                let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !name.is_empty() {
+                    let first = name.lines().next().unwrap_or("").trim().to_string();
+                    if !first.is_empty() {
+                        return ("CUDA".to_string(), first);
+                    }
+                }
+            }
         }
         return ("CPU".to_string(), cpu_model.to_string());
     }

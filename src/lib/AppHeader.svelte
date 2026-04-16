@@ -23,7 +23,9 @@
   });
 
   const isGpu = $derived(
-    accel?.backend === "Metal" || accel?.backend === "Vulkan"
+    accel?.backend === "Metal" ||
+      accel?.backend === "Vulkan" ||
+      accel?.backend === "CUDA"
   );
   const tooltip = $derived(
     accel
