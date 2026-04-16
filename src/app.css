@@ -1,0 +1,253 @@
+/* --- Design tokens: Radix-inspired teal + grays --- */
+
+:root {
+  /* Gray scale */
+  --gray-1: #fcfcfc;
+  --gray-2: #f8f8f7;
+  --gray-3: #f1f1ef;
+  --gray-4: #eaeae8;
+  --gray-5: #e3e3e0;
+  --gray-6: #dbdbd7;
+  --gray-7: #cfcfca;
+  --gray-8: #b9b9b4;
+  --gray-9: #8d8d86;
+  --gray-10: #82827c;
+  --gray-11: #63635e;
+  --gray-12: #21201c;
+
+  /* Teal accent */
+  --teal-1: #fafefd;
+  --teal-2: #f0fbf8;
+  --teal-3: #dcf7ef;
+  --teal-4: #c5f1e4;
+  --teal-5: #a8e6d4;
+  --teal-6: #82d4c0;
+  --teal-7: #49bda5;
+  --teal-8: #0fa489;
+  --teal-9: #12a594;
+  --teal-10: #0f9481;
+  --teal-11: #008573;
+  --teal-12: #0d3d37;
+
+  /* Semantic */
+  --bg: var(--gray-1);
+  --bg-subtle: var(--gray-2);
+  --bg-hover: var(--gray-3);
+  --bg-active: var(--gray-4);
+  --surface: #ffffff;
+  --text: var(--gray-12);
+  --text-secondary: var(--gray-11);
+  --text-muted: var(--gray-10);
+  --text-faint: var(--gray-9);
+  --border: var(--gray-5);
+  --border-strong: var(--gray-7);
+
+  --accent: var(--teal-9);
+  --accent-hover: var(--teal-10);
+  --accent-soft-bg: var(--teal-3);
+  --accent-soft-border: var(--teal-5);
+  --accent-text: var(--teal-11);
+
+  --danger: #dc2626;
+  --danger-soft-bg: #fee2e2;
+
+  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.08);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --easing: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gray-1: #111110;
+    --gray-2: #191918;
+    --gray-3: #222221;
+    --gray-4: #2a2a28;
+    --gray-5: #31312e;
+    --gray-6: #3b3a37;
+    --gray-7: #494844;
+    --gray-8: #62615c;
+    --gray-9: #6f6d66;
+    --gray-10: #7c7b74;
+    --gray-11: #b5b3ad;
+    --gray-12: #eeeeec;
+
+    --teal-1: #0d1514;
+    --teal-2: #111c1b;
+    --teal-3: #0d2d2a;
+    --teal-4: #023b35;
+    --teal-5: #084843;
+    --teal-6: #105650;
+    --teal-7: #1b6560;
+    --teal-8: #227872;
+    --teal-9: #12a594;
+    --teal-10: #0eb39e;
+    --teal-11: #0ac5ad;
+    --teal-12: #adf0dd;
+
+    --surface: var(--gray-2);
+
+    --danger: #ef4444;
+    --danger-soft-bg: #3f1d1d;
+
+    --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.5);
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont,
+    "SF Pro Text", "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.005em;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* --- Buttons (Radix-inspired) --- */
+
+.btn {
+  padding: 6px 12px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background var(--duration-fast) var(--easing),
+    color var(--duration-fast) var(--easing),
+    border-color var(--duration-fast) var(--easing),
+    transform 80ms var(--easing);
+  white-space: nowrap;
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-solid {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.btn-solid:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-soft {
+  background: var(--accent-soft-bg);
+  color: var(--accent-text);
+}
+
+.btn-soft:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-soft-bg) 70%, var(--accent) 30%);
+}
+
+.btn-outline {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--danger);
+}
+
+.btn-danger-ghost:hover:not(:disabled) {
+  background: var(--danger-soft-bg);
+}
+
+/* --- Scrollbars --- */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--gray-6);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-8);
+  background-clip: content-box;
+}
