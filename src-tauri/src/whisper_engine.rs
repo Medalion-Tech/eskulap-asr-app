@@ -44,17 +44,21 @@ impl WhisperEngine {
             .full(params, audio_pcm)
             .map_err(|e| format!("Transcription failed: {}", e))?;
 
-        let num_segments = state
-            .full_n_segments()
-            .map_err(|e| format!("Failed to get segments: {}", e))?;
+        let num_segments = state.full_n_segments();
 
         let mut text = String::new();
         for i in 0..num_segments {
-            if let Ok(segment) = state.full_get_segment_text(i) {
-                if !text.is_empty() {
-                    text.push(' ');
+            if let Some(segment) = state.get_segment(i) {
+                if let Ok(s) = segment.to_str_lossy() {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                    text.push_str(trimmed);
                 }
-                text.push_str(segment.trim());
             }
         }
 

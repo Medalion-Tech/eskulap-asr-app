@@ -67,7 +67,8 @@ jobs:
             libssl-dev \
             libxdo-dev \
             libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev
+            libjavascriptcoregtk-4.1-dev \
+            libasound2-dev
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -92,6 +93,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Disable whisper.cpp's aggressive ARM ISA auto-detection which breaks
+          # on some macOS arm64 GitHub runners (i8mm mismatch).
+          CMAKE_ARGS: ${{ startsWith(matrix.platform, 'macos') && '-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.4-a' || '' }}
         with:
           tagName: ${{ steps.tag.outputs.TAG }}
           releaseName: 'Eskulap ASR ${{ steps.tag.outputs.TAG }}'
