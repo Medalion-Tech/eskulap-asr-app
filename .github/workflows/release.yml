@@ -85,7 +85,7 @@ jobs:
         with:
           cuda: '12.5.1'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "curand", "curand_dev", "cuda_profiler_api"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "curand", "curand_dev", "cuda_profiler_api", "visual_studio_integration"]'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
