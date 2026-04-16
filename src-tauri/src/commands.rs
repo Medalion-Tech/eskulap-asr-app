@@ -9,6 +9,7 @@ use tauri::ipc::Channel;
 #[derive(Serialize)]
 pub struct AcceleratorInfo {
     pub backend: String,
+    pub device: String,
     pub platform: String,
     pub arch: String,
     pub threads: i32,
@@ -17,12 +18,6 @@ pub struct AcceleratorInfo {
 
 #[tauri::command]
 pub fn get_accelerator_info() -> AcceleratorInfo {
-    let backend = if cfg!(target_os = "macos") {
-        "Metal".to_string()
-    } else {
-        "CPU".to_string()
-    };
-
     let platform = if cfg!(target_os = "macos") {
         "macOS".to_string()
     } else if cfg!(target_os = "windows") {
@@ -47,14 +42,40 @@ pub fn get_accelerator_info() -> AcceleratorInfo {
         .min(8);
 
     let cpu_model = detect_cpu_model();
+    let (backend, device) = detect_backend(&cpu_model);
 
     AcceleratorInfo {
         backend,
+        device,
         platform,
         arch,
         threads,
         cpu_model,
     }
+}
+
+fn detect_backend(cpu_model: &str) -> (String, String) {
+    #[cfg(target_os = "macos")]
+    {
+        let device = if cpu_model.is_empty() {
+            "Apple GPU".to_string()
+        } else {
+            cpu_model.to_string()
+        };
+        return ("Metal".to_string(), device);
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        // Try enumerating Vulkan devices; fall back to CPU if none
+        let devices = std::panic::catch_unwind(whisper_rs::vulkan::list_devices)
+            .unwrap_or_default();
+        if let Some(first) = devices.into_iter().next() {
+            return ("Vulkan".to_string(), first.name);
+        }
+        return ("CPU".to_string(), cpu_model.to_string());
+    }
+    #[allow(unreachable_code)]
+    ("CPU".to_string(), cpu_model.to_string())
 }
 
 fn detect_cpu_model() -> String {

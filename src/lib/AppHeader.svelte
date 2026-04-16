@@ -5,6 +5,7 @@
 
   interface AcceleratorInfo {
     backend: string;
+    device: string;
     platform: string;
     arch: string;
     threads: number;
@@ -21,10 +22,15 @@
     }
   });
 
-  const isGpu = $derived(accel?.backend === "Metal");
+  const isGpu = $derived(
+    accel?.backend === "Metal" || accel?.backend === "Vulkan"
+  );
   const tooltip = $derived(
     accel
-      ? `${accel.platform} ${accel.arch}${accel.cpu_model ? ` · ${accel.cpu_model}` : ""} · ${accel.threads} wątków`
+      ? `${accel.platform} ${accel.arch}` +
+        (accel.device ? ` · ${accel.device}` : "") +
+        (accel.backend === "CPU" ? ` · ${accel.threads} wątków` : "") +
+        (accel.backend !== "CPU" && accel.cpu_model ? ` · CPU: ${accel.cpu_model}` : "")
       : ""
   );
 </script>
