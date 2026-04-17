@@ -6,6 +6,12 @@ pub struct Note {
     pub id: String,
     pub timestamp: String,
     pub text: String,
+    #[serde(default)]
+    pub raw_transcription: Option<String>,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub template_name: Option<String>,
 }
 
 pub struct NotesStore {
@@ -36,6 +42,29 @@ impl NotesStore {
             id: uuid::Uuid::new_v4().to_string(),
             timestamp: chrono_now(),
             text,
+            raw_transcription: None,
+            template_id: None,
+            template_name: None,
+        };
+        self.notes.push(note.clone());
+        self.save();
+        note
+    }
+
+    pub fn add_with_template(
+        &mut self,
+        text: String,
+        raw_transcription: String,
+        template_id: String,
+        template_name: String,
+    ) -> Note {
+        let note = Note {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono_now(),
+            text,
+            raw_transcription: Some(raw_transcription),
+            template_id: Some(template_id),
+            template_name: Some(template_name),
         };
         self.notes.push(note.clone());
         self.save();
@@ -64,6 +93,25 @@ impl NotesStore {
         }
     }
 
+    pub fn update_with_template(
+        &mut self,
+        id: &str,
+        text: String,
+        template_id: String,
+        template_name: String,
+    ) -> Option<Note> {
+        if let Some(note) = self.notes.iter_mut().find(|n| n.id == id) {
+            note.text = text;
+            note.template_id = Some(template_id);
+            note.template_name = Some(template_name);
+            let updated = note.clone();
+            self.save();
+            Some(updated)
+        } else {
+            None
+        }
+    }
+
     pub fn clear(&mut self) {
         self.notes.clear();
         self.save();
@@ -76,7 +124,7 @@ impl NotesStore {
     }
 }
 
-fn chrono_now() -> String {
+pub fn chrono_now() -> String {
     use std::time::SystemTime;
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)

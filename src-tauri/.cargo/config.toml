@@ -1,0 +1,7 @@
+# whisper-rs and llama-cpp-4 both vendor their own copy of ggml statically.
+# On Linux (GNU/rust-lld), the duplicate symbols are a hard error; macOS's
+# Mach-O linker tolerates them silently. Allow the linker to pick the first
+# definition of each ggml_backend_* symbol. Safe in practice because both
+# crates use the same ggml ABI; first-definition-wins matches macOS behavior.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]

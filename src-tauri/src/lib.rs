@@ -1,14 +1,20 @@
+mod builtin_templates;
 mod commands;
+mod llm_engine;
 mod model_manager;
 mod notes;
 mod recorder;
+mod templates;
 mod whisper_engine;
 
-use commands::{AudioLevelState, NotesState, RecorderState, WhisperState};
+use commands::{
+    AudioLevelState, LlmState, NotesState, RecorderState, TemplatesState, WhisperState,
+};
 use notes::NotesStore;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
+use templates::TemplatesStore;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -37,6 +43,8 @@ pub fn run() {
             app.manage(AudioLevelState(Arc::new(Mutex::new(VecDeque::with_capacity(
                 recorder::LEVEL_HISTORY_SIZE,
             )))));
+            app.manage(LlmState(Arc::new(Mutex::new(None))));
+            app.manage(TemplatesState(Mutex::new(TemplatesStore::new(&data_dir))));
 
             Ok(())
         })
@@ -54,6 +62,18 @@ pub fn run() {
             commands::delete_note,
             commands::update_note,
             commands::clear_notes,
+            commands::add_note_with_template,
+            commands::update_note_with_template,
+            commands::check_llm_model_exists,
+            commands::download_llm_model,
+            commands::load_llm_model,
+            commands::is_llm_loaded,
+            commands::get_templates,
+            commands::add_template,
+            commands::update_template,
+            commands::delete_template,
+            commands::reset_builtin_templates,
+            commands::generate_from_template,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
