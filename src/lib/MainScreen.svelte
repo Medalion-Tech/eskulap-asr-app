@@ -2,11 +2,13 @@
   import AppHeader from "./AppHeader.svelte";
   import RecordButton from "./RecordButton.svelte";
   import NotesList from "./NotesList.svelte";
+  import TemplatePicker from "./TemplatePicker.svelte";
   import { statusMessage } from "./stores";
 </script>
 
 <div class="main">
   <AppHeader />
+  <TemplatePicker />
   <RecordButton />
   <NotesList />
   {#if $statusMessage}

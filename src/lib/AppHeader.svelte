@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { MODEL_REPO, MODEL_QUANTIZATION } from "./model-info";
+  import { screen } from "./stores";
 
   interface AcceleratorInfo {
     backend: string;
@@ -52,16 +52,17 @@
         {accel.backend}
       </span>
     {/if}
-    <a
-      class="model-info"
-      href="https://huggingface.co/{MODEL_REPO}"
-      target="_blank"
-      rel="noreferrer"
-      title="Otwórz stronę modelu na HuggingFace"
+    <button
+      class="settings-btn"
+      onclick={() => ($screen = "settings")}
+      title="Ustawienia i szablony"
+      aria-label="Ustawienia"
     >
-      <span class="model-name">{MODEL_REPO}</span>
-      <span class="model-quant">{MODEL_QUANTIZATION}</span>
-    </a>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
   </div>
 </header>
 
@@ -135,38 +136,25 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
   }
 
-  .model-info {
+  .settings-btn {
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 11px;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
     color: var(--text-muted);
-    text-decoration: none;
-    padding: 3px 8px;
-    border-radius: 5px;
-    transition: background var(--duration-fast) var(--easing),
-      color var(--duration-fast) var(--easing);
+    cursor: pointer;
     -webkit-app-region: no-drag;
     app-region: no-drag;
-    font-family: "Inter Variable", "Inter", sans-serif;
+    transition: background var(--duration-fast) var(--easing),
+      color var(--duration-fast) var(--easing);
   }
 
-  .model-info:hover {
+  .settings-btn:hover {
     background: var(--bg-hover);
-    color: var(--text-secondary);
-  }
-
-  .model-name {
-    font-variant-numeric: tabular-nums;
-  }
-
-  .model-quant {
-    padding: 1px 5px;
-    background: var(--accent-soft-bg);
-    color: var(--accent-text);
-    border-radius: 3px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    color: var(--text);
   }
 </style>

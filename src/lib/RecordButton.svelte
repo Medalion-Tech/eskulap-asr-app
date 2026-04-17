@@ -1,11 +1,15 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, Channel } from "@tauri-apps/api/core";
   import {
     isRecording,
     isTranscribing,
+    isGenerating,
+    generationPreview,
     recordingSeconds,
     notes,
     statusMessage,
+    selectedTemplateId,
+    templates,
   } from "./stores";
   import Waveform from "./Waveform.svelte";
 
@@ -18,7 +22,7 @@
   }
 
   async function toggleRecording() {
-    if ($isTranscribing) return;
+    if ($isTranscribing || $isGenerating) return;
     if ($isRecording) {
       await stopRecording();
     } else {
@@ -50,22 +54,77 @@
 
     try {
       const audio: number[] = await invoke("stop_recording");
-      const text: string = await invoke("transcribe", { audio });
+      const raw: string = await invoke("transcribe", { audio });
+      const rawTrim = raw.trim();
+      $isTranscribing = false;
 
-      if (text.trim()) {
+      if (!rawTrim) {
+        $statusMessage = "";
+        return;
+      }
+
+      const tmplId = $selectedTemplateId;
+
+      if (!tmplId) {
         const note = await invoke<{
           id: string;
           timestamp: string;
           text: string;
-        }>("add_note", { text: text.trim() });
+        }>("add_note", { text: rawTrim });
         $notes = [{ ...note, selected: false }, ...$notes];
+        $statusMessage = "";
+        return;
       }
+
+      const tmpl = $templates.find((t) => t.id === tmplId);
+      if (!tmpl) {
+        const note = await invoke<{
+          id: string;
+          timestamp: string;
+          text: string;
+        }>("add_note", { text: rawTrim });
+        $notes = [{ ...note, selected: false }, ...$notes];
+        $statusMessage = "";
+        return;
+      }
+
+      $isGenerating = true;
+      $generationPreview = "";
+      $statusMessage = `Formatowanie – ${tmpl.name}…`;
+
+      const onToken = new Channel<string>();
+      onToken.onmessage = (piece: string) => {
+        $generationPreview += piece;
+      };
+
+      const formatted: string = await invoke("generate_from_template", {
+        templateId: tmplId,
+        rawTranscription: rawTrim,
+        onToken,
+      });
+
+      const note = await invoke<{
+        id: string;
+        timestamp: string;
+        text: string;
+        raw_transcription: string | null;
+        template_id: string | null;
+        template_name: string | null;
+      }>("add_note_with_template", {
+        text: formatted.trim(),
+        rawTranscription: rawTrim,
+        templateId: tmplId,
+        templateName: tmpl.name,
+      });
+      $notes = [{ ...note, selected: false }, ...$notes];
 
       $statusMessage = "";
     } catch (e: any) {
       $statusMessage = `Błąd: ${e}`;
     } finally {
       $isTranscribing = false;
+      $isGenerating = false;
+      $generationPreview = "";
     }
   }
 </script>
@@ -79,11 +138,11 @@
     <button
       class="record-btn"
       class:recording={$isRecording}
-      disabled={$isTranscribing}
+      disabled={$isTranscribing || $isGenerating}
       onclick={toggleRecording}
       aria-label={$isRecording ? "Zatrzymaj nagrywanie" : "Rozpocznij nagrywanie"}
     >
-      {#if $isTranscribing}
+      {#if $isTranscribing || $isGenerating}
         <div class="spinner"></div>
       {:else if $isRecording}
         <span class="stop-shape"></span>
@@ -93,7 +152,9 @@
     </button>
 
     <div class="label">
-      {#if $isTranscribing}
+      {#if $isGenerating}
+        <span class="label-dim">Formatowanie…</span>
+      {:else if $isTranscribing}
         <span class="label-dim">Transkrypcja…</span>
       {:else if $isRecording}
         <span class="time">{formatTime($recordingSeconds)}</span>
@@ -102,6 +163,13 @@
       {/if}
     </div>
   </div>
+
+  {#if $isGenerating && $generationPreview}
+    <div class="preview">
+      <div class="preview-label">Model generuje notatkę:</div>
+      <pre class="preview-text">{$generationPreview}</pre>
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -109,14 +177,14 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 28px 24px 20px;
-    gap: 16px;
+    padding: 20px 24px 16px;
+    gap: 14px;
   }
 
   .waveform-container {
     width: 100%;
     max-width: 560px;
-    height: 72px;
+    height: 64px;
     opacity: 0.35;
     transition: opacity var(--duration-base) var(--easing);
   }
@@ -219,5 +287,34 @@
     color: var(--accent-text);
     font-weight: 500;
     font-variant-numeric: tabular-nums;
+  }
+
+  .preview {
+    width: 100%;
+    max-width: 560px;
+    max-height: 160px;
+    overflow-y: auto;
+    padding: 10px 12px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .preview-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+
+  .preview-text {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
   }
 </style>

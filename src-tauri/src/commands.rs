@@ -1,9 +1,11 @@
+use crate::llm_engine::{build_prompt, LlmEngine};
 use crate::model_manager::{self, DownloadProgress};
 use crate::notes::{Note, NotesStore};
 use crate::recorder::{AudioRecorder, LevelHistory};
+use crate::templates::{Template, TemplatesStore};
 use crate::whisper_engine::WhisperEngine;
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 
 #[derive(Serialize)]
@@ -143,6 +145,8 @@ pub struct WhisperState(pub Mutex<Option<WhisperEngine>>);
 pub struct RecorderState(pub Mutex<Option<AudioRecorder>>);
 pub struct NotesState(pub Mutex<NotesStore>);
 pub struct AudioLevelState(pub LevelHistory);
+pub struct LlmState(pub Arc<Mutex<Option<LlmEngine>>>);
+pub struct TemplatesState(pub Mutex<TemplatesStore>);
 
 #[tauri::command]
 pub fn check_model_exists(app: tauri::AppHandle) -> bool {
@@ -268,4 +272,152 @@ pub fn clear_notes(notes: tauri::State<'_, NotesState>) -> Result<(), String> {
     let mut guard = notes.0.lock().map_err(|e| e.to_string())?;
     guard.clear();
     Ok(())
+}
+
+#[tauri::command]
+pub fn add_note_with_template(
+    notes: tauri::State<'_, NotesState>,
+    text: String,
+    raw_transcription: String,
+    template_id: String,
+    template_name: String,
+) -> Result<Note, String> {
+    let mut guard = notes.0.lock().map_err(|e| e.to_string())?;
+    Ok(guard.add_with_template(text, raw_transcription, template_id, template_name))
+}
+
+#[tauri::command]
+pub fn update_note_with_template(
+    notes: tauri::State<'_, NotesState>,
+    id: String,
+    text: String,
+    template_id: String,
+    template_name: String,
+) -> Result<Option<Note>, String> {
+    let mut guard = notes.0.lock().map_err(|e| e.to_string())?;
+    Ok(guard.update_with_template(&id, text, template_id, template_name))
+}
+
+// ---- LLM model management ----
+
+#[tauri::command]
+pub fn check_llm_model_exists(app: tauri::AppHandle) -> bool {
+    model_manager::llm::model_exists(&app)
+}
+
+#[tauri::command]
+pub async fn download_llm_model(
+    app: tauri::AppHandle,
+    on_progress: Channel<DownloadProgress>,
+) -> Result<(), String> {
+    model_manager::llm::download(&app, &on_progress).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn load_llm_model(
+    app: tauri::AppHandle,
+    llm: tauri::State<'_, LlmState>,
+) -> Result<(), String> {
+    let path = model_manager::llm::model_path(&app);
+    if !path.exists() {
+        return Err("LLM model not downloaded yet".to_string());
+    }
+    let engine = LlmEngine::new(&path)?;
+    let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
+    *guard = Some(engine);
+    log::info!("LLM model loaded successfully");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn is_llm_loaded(llm: tauri::State<'_, LlmState>) -> bool {
+    llm.0.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+// ---- Templates ----
+
+#[tauri::command]
+pub fn get_templates(
+    templates: tauri::State<'_, TemplatesState>,
+) -> Result<Vec<Template>, String> {
+    let guard = templates.0.lock().map_err(|e| e.to_string())?;
+    Ok(guard.get_all())
+}
+
+#[tauri::command]
+pub fn add_template(
+    templates: tauri::State<'_, TemplatesState>,
+    template: Template,
+) -> Result<Template, String> {
+    let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
+    Ok(guard.add(template))
+}
+
+#[tauri::command]
+pub fn update_template(
+    templates: tauri::State<'_, TemplatesState>,
+    id: String,
+    template: Template,
+) -> Result<Template, String> {
+    let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
+    guard.update(&id, template)
+}
+
+#[tauri::command]
+pub fn delete_template(
+    templates: tauri::State<'_, TemplatesState>,
+    id: String,
+) -> Result<bool, String> {
+    let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
+    guard.delete(&id)
+}
+
+#[tauri::command]
+pub fn reset_builtin_templates(
+    templates: tauri::State<'_, TemplatesState>,
+) -> Result<(), String> {
+    let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
+    guard.reset_builtins();
+    Ok(())
+}
+
+// ---- Template-based generation ----
+
+#[tauri::command]
+pub async fn generate_from_template(
+    llm: tauri::State<'_, LlmState>,
+    templates: tauri::State<'_, TemplatesState>,
+    template_id: String,
+    raw_transcription: String,
+    on_token: Channel<String>,
+) -> Result<String, String> {
+    let template = {
+        let guard = templates.0.lock().map_err(|e| e.to_string())?;
+        guard.get(&template_id).ok_or("Template not found")?
+    };
+
+    let engine_arc = llm.0.clone();
+
+    let raw = raw_transcription;
+    let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let guard = engine_arc.lock().map_err(|e| e.to_string())?;
+        let engine = guard.as_ref().ok_or("LLM model not loaded")?;
+
+        let prompt = build_prompt(
+            &template.content,
+            template.example_input.as_deref(),
+            template.example_output.as_deref(),
+            &raw,
+        );
+
+        engine.generate(&prompt, 1500, &mut |piece| {
+            let _ = on_token.send(piece.to_string());
+        })
+    })
+    .await
+    .map_err(|e| format!("LLM task failed: {}", e))??;
+
+    log::info!("LLM generated {} chars", result.len());
+    Ok(result.trim().to_string())
 }
