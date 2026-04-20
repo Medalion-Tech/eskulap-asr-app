@@ -11,6 +11,13 @@ rust-version = "1.77.2"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+accel-metal  = ["whisper-rs/metal",  "llama-cpp-4/metal"]
+accel-vulkan = ["whisper-rs/vulkan", "llama-cpp-4/vulkan"]
+accel-cuda   = ["whisper-rs/cuda",   "llama-cpp-4/cuda"]
+accel-cpu    = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -30,15 +37,5 @@ uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 sha2 = "0.10"
 hex = "0.4"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-whisper-rs = { version = "0.16", features = ["metal"] }
-llama-cpp-4 = { version = "0.2.46", default-features = false, features = ["metal"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-whisper-rs = { version = "0.16", features = ["vulkan"] }
-llama-cpp-4 = { version = "0.2.46", default-features = false, features = ["vulkan"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-whisper-rs = { version = "0.16", features = ["cuda"] }
-llama-cpp-4 = { version = "0.2.46", default-features = false, features = ["cuda"] }
+whisper-rs = { version = "0.16" }
+llama-cpp-4 = { version = "0.2.46", default-features = false }

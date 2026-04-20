@@ -9,6 +9,11 @@ use llama_cpp_4::model::params::LlamaModelParams;
 use llama_cpp_4::model::{AddBos, LlamaModel, Special};
 use llama_cpp_4::sampling::LlamaSampler;
 
+#[cfg(any(feature = "accel-metal", feature = "accel-vulkan", feature = "accel-cuda"))]
+const GPU_LAYERS: u32 = 999;
+#[cfg(not(any(feature = "accel-metal", feature = "accel-vulkan", feature = "accel-cuda")))]
+const GPU_LAYERS: u32 = 0;
+
 static BACKEND: OnceLock<Arc<LlamaBackend>> = OnceLock::new();
 
 fn backend() -> Result<Arc<LlamaBackend>, String> {
@@ -32,7 +37,7 @@ unsafe impl Sync for LlmEngine {}
 impl LlmEngine {
     pub fn new(model_path: &Path) -> Result<Self, String> {
         let backend = backend()?;
-        let model_params = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(GPU_LAYERS);
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| format!("Failed to load LLM model: {}", e))?;
         Ok(Self {

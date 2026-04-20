@@ -2,11 +2,13 @@ use crate::llm_engine::{build_prompt, LlmEngine};
 use crate::model_manager::{self, DownloadProgress};
 use crate::notes::{Note, NotesStore};
 use crate::recorder::{AudioRecorder, LevelHistory};
+use crate::settings::{self, AppSettings};
 use crate::templates::{Template, TemplatesStore};
 use crate::whisper_engine::WhisperEngine;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
+use tauri::Manager;
 
 #[derive(Serialize)]
 pub struct AcceleratorInfo {
@@ -16,7 +18,18 @@ pub struct AcceleratorInfo {
     pub arch: String,
     pub threads: i32,
     pub cpu_model: String,
+    pub build_variant: String,
 }
+
+const BUILD_VARIANT: &str = if cfg!(feature = "accel-cuda") {
+    "cuda"
+} else if cfg!(feature = "accel-metal") {
+    "metal"
+} else if cfg!(feature = "accel-vulkan") {
+    "vulkan"
+} else {
+    "cpu"
+};
 
 #[tauri::command]
 pub fn get_accelerator_info() -> AcceleratorInfo {
@@ -53,6 +66,7 @@ pub fn get_accelerator_info() -> AcceleratorInfo {
         arch,
         threads,
         cpu_model,
+        build_variant: BUILD_VARIANT.to_string(),
     }
 }
 
@@ -335,6 +349,30 @@ pub fn is_llm_loaded(llm: tauri::State<'_, LlmState>) -> bool {
     llm.0.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
+#[tauri::command]
+pub fn unload_llm_model(llm: tauri::State<'_, LlmState>) -> Result<(), String> {
+    let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
+    *guard = None;
+    log::info!("LLM model unloaded");
+    Ok(())
+}
+
+// ---- Settings ----
+
+fn data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
+    Ok(settings::load(&data_dir(&app)?))
+}
+
+#[tauri::command]
+pub fn set_settings(app: tauri::AppHandle, new_settings: AppSettings) -> Result<(), String> {
+    settings::save(&data_dir(&app)?, &new_settings)
+}
+
 // ---- Templates ----
 
 #[tauri::command]
@@ -386,6 +424,7 @@ pub fn reset_builtin_templates(
 
 #[tauri::command]
 pub async fn generate_from_template(
+    app: tauri::AppHandle,
     llm: tauri::State<'_, LlmState>,
     templates: tauri::State<'_, TemplatesState>,
     template_id: String,
@@ -396,6 +435,27 @@ pub async fn generate_from_template(
         let guard = templates.0.lock().map_err(|e| e.to_string())?;
         guard.get(&template_id).ok_or("Template not found")?
     };
+
+    // Lazy-load: if LLM not yet loaded, load it now from disk.
+    {
+        let needs_load = llm.0.lock().map(|g| g.is_none()).unwrap_or(false);
+        if needs_load {
+            let path = model_manager::llm::model_path(&app);
+            if !path.exists() {
+                return Err("LLM model not downloaded".to_string());
+            }
+            let engine_arc = llm.0.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let engine = LlmEngine::new(&path)?;
+                let mut guard = engine_arc.lock().map_err(|e| e.to_string())?;
+                *guard = Some(engine);
+                log::info!("LLM model lazy-loaded");
+                Ok(())
+            })
+            .await
+            .map_err(|e| format!("LLM load task failed: {}", e))??;
+        }
+    }
 
     let engine_arc = llm.0.clone();
 

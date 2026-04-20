@@ -4,6 +4,7 @@ mod llm_engine;
 mod model_manager;
 mod notes;
 mod recorder;
+mod settings;
 mod templates;
 mod whisper_engine;
 
@@ -68,6 +69,9 @@ pub fn run() {
             commands::download_llm_model,
             commands::load_llm_model,
             commands::is_llm_loaded,
+            commands::unload_llm_model,
+            commands::get_settings,
+            commands::set_settings,
             commands::get_templates,
             commands::add_template,
             commands::update_template,
