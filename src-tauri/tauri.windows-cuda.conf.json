@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Eskulap ASR (CUDA)",
+  "bundle": {
+    "resources": {
+      "resources/cuda/cublas64_12.dll": "./cublas64_12.dll",
+      "resources/cuda/cublasLt64_12.dll": "./cublasLt64_12.dll",
+      "resources/cuda/cudart64_12.dll": "./cudart64_12.dll"
+    }
+  }
+}

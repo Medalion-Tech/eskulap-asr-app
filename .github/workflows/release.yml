@@ -23,19 +23,33 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
-            args: '--target aarch64-apple-darwin'
+            features: accel-metal
+            args: '--target aarch64-apple-darwin --features accel-metal'
           - platform: macos-latest
             target: x86_64-apple-darwin
             label: macos-x64
-            args: '--target x86_64-apple-darwin'
+            features: accel-metal
+            args: '--target x86_64-apple-darwin --features accel-metal'
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            label: linux-x64
-            args: ''
+            label: linux-x64-vulkan
+            features: accel-vulkan
+            args: '--features accel-vulkan'
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x64-cpu
+            features: accel-cpu
+            args: '--features accel-cpu -c src-tauri/tauri.linux-cpu.conf.json'
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            label: windows-x64
-            args: ''
+            label: windows-x64-cpu
+            features: accel-cpu
+            args: '--features accel-cpu'
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x64-cuda
+            features: accel-cuda
+            args: '--features accel-cuda -c src-tauri/tauri.windows-cuda.conf.json'
 
     runs-on: ${{ matrix.platform }}
 
@@ -51,16 +65,11 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
-          key: ${{ matrix.target }}
+          key: ${{ matrix.label }}
 
-      - name: Install Linux dependencies
+      - name: Install Linux base dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
-          # LunarG Vulkan SDK — provides glslc (shaderc) which Ubuntu apt lacks
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | \
-            sudo gpg --dearmor -o /usr/share/keyrings/lunarg.gpg
-          echo "deb [signed-by=/usr/share/keyrings/lunarg.gpg] https://packages.lunarg.com/vulkan/1.3.290 jammy main" | \
-            sudo tee /etc/apt/sources.list.d/lunarg-vulkan-1.3.290-jammy.list
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
@@ -76,16 +85,37 @@ jobs:
             libxdo-dev \
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
-            libasound2-dev \
-            vulkan-sdk
+            libasound2-dev
 
-      - name: Install CUDA Toolkit (Windows)
-        if: startsWith(matrix.platform, 'windows')
+      - name: Install Vulkan SDK (Linux Vulkan only)
+        if: matrix.label == 'linux-x64-vulkan'
+        run: |
+          # LunarG Vulkan SDK — provides glslc (shaderc) which Ubuntu apt lacks
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | \
+            sudo gpg --dearmor -o /usr/share/keyrings/lunarg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/lunarg.gpg] https://packages.lunarg.com/vulkan/1.3.290 jammy main" | \
+            sudo tee /etc/apt/sources.list.d/lunarg-vulkan-1.3.290-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Install CUDA Toolkit (Windows CUDA only)
+        if: matrix.label == 'windows-x64-cuda'
         uses: Jimver/cuda-toolkit@v0.2.19
         with:
           cuda: '12.5.1'
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "curand", "curand_dev", "cuda_profiler_api", "visual_studio_integration"]'
+
+      - name: Stage CUDA redistributables (Windows CUDA only)
+        if: matrix.label == 'windows-x64-cuda'
+        shell: pwsh
+        run: |
+          $cudaBin = "$env:CUDA_PATH\bin"
+          $dest    = "src-tauri\resources\cuda"
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          Copy-Item "$cudaBin\cublas64_12.dll"    $dest
+          Copy-Item "$cudaBin\cublasLt64_12.dll"  $dest
+          Copy-Item "$cudaBin\cudart64_12.dll"    $dest
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -111,8 +141,8 @@ jobs:
         shell: bash
         run: echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.4-a" >> $GITHUB_ENV
 
-      - name: Configure whisper.cpp build (Windows)
-        if: startsWith(matrix.platform, 'windows')
+      - name: Configure whisper.cpp build (Windows CUDA)
+        if: matrix.label == 'windows-x64-cuda'
         shell: bash
         run: |
           # Ensure CUDA architectures are set (support common GeForce cards)
@@ -137,17 +167,32 @@ jobs:
           releaseBody: |
             ## Instalacja
 
-            **macOS (Apple Silicon)** — `Eskulap.ASR_0.1.0_aarch64.dmg`
-            **macOS (Intel)** — `Eskulap.ASR_0.1.0_x64.dmg`
-            **Windows** — `Eskulap.ASR_0.1.0_x64-setup.exe` (NSIS)
-            **Linux (Omarchy / Arch / Ubuntu)** — `.AppImage` (`chmod +x`, uruchom)
+            ### Windows
 
-            ### macOS — ważne
+            - **Eskulap ASR (CPU)** — `Eskulap.ASR_<ver>_x64-setup.exe` (zalecany dla większości)
+              Działa na każdym komputerze, nie wymaga GPU ani CUDA.
+            - **Eskulap ASR CUDA** — `Eskulap.ASR..CUDA.._<ver>_x64-setup.exe`
+              Szybsze streszczenia AI na kartach NVIDIA (GTX 10xx i nowsze).
+              Wymaga aktualnego sterownika NVIDIA. CUDA Runtime jest w instalatorze — nie musisz go instalować osobno.
+
+            SmartScreen: "Więcej informacji" → "Uruchom mimo to".
+
+            ### Linux
+
+            - **Eskulap ASR (Vulkan)** — `.AppImage` (zalecany)
+              Wymaga sterownika Vulkan (Mesa / NVIDIA / AMD).
+              `sudo pacman -S vulkan-intel` / `vulkan-radeon` / `nvidia-utils` na Arch.
+            - **Eskulap ASR (CPU)** — fallback dla headless / VM / minimalnych środowisk.
+
+            `chmod +x` na pliku AppImage przed uruchomieniem.
+
+            ### macOS
+
+            - **Apple Silicon** — `Eskulap.ASR_<ver>_aarch64.dmg`
+            - **Intel** — `Eskulap.ASR_<ver>_x64.dmg`
 
             Aplikacja jest **ad-hoc signed** (bez certyfikatu Apple Developer).
-
-            Jeśli przy otwieraniu pojawi się "Eskulap ASR jest uszkodzona" —
-            otwórz Terminal i wykonaj:
+            Jeśli pojawi się "Eskulap ASR jest uszkodzona" — otwórz Terminal:
 
             ```bash
             xattr -cr "/Applications/Eskulap ASR.app"
@@ -155,21 +200,10 @@ jobs:
 
             Potem prawym przyciskiem → **Otwórz**.
 
-            ### Windows
-
-            SmartScreen: "Więcej informacji" → "Uruchom mimo to".
-
-            GPU: Wymaga NVIDIA GPU + [CUDA Runtime 12.x](https://www.nvidia.com/Download/index.aspx).
-            Bez CUDA — aplikacja i tak działa, ale na CPU.
-
-            ### Linux
-
-            GPU: dowolna karta ze sterownikiem Vulkan (NVIDIA/AMD/Intel).
-            Na Arch/Omarchy: `sudo pacman -S vulkan-intel` (lub `vulkan-radeon` / `nvidia-utils`).
-
             ---
 
             Przy pierwszym uruchomieniu aplikacja pobiera model ASR (~800 MB).
+            AI streszczenia notatek (model ~5 GB) są opcjonalne — można je włączyć/wyłączyć w Ustawieniach.
 
             ## Model
 

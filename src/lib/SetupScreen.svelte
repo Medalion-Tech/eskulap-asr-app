@@ -11,6 +11,7 @@
 
   let downloading = $state(false);
   let error = $state("");
+  let llmEnabled = $state(true);
 
   interface DlProgress {
     stage: string;
@@ -39,6 +40,8 @@
     error = "";
 
     try {
+      await invoke("set_settings", { newSettings: { llm_enabled: llmEnabled } });
+
       const whisperExists: boolean = await invoke("check_model_exists");
       const llmExists: boolean = await invoke("check_llm_model_exists");
 
@@ -49,7 +52,7 @@
           label: "Pobieranie modelu ASR…",
         });
       }
-      if (!llmExists) {
+      if (llmEnabled && !llmExists) {
         stages.push({
           cmd: "download_llm_model",
           label: "Pobieranie modelu LLM…",
@@ -65,9 +68,7 @@
 
       $statusMessage = "Ładowanie modelu ASR…";
       await invoke("load_model");
-
-      $statusMessage = "Ładowanie modelu LLM…";
-      await invoke("load_llm_model");
+      // LLM loads lazily on first use.
 
       const savedNotes = await invoke<
         Array<{
@@ -110,18 +111,34 @@
         <span class="model-name">lion-ai/eskulap-asr-turbo-beta</span>
         <span class="model-quant">Q8_0 · ~800 MB</span>
       </div>
-      <div class="model-row">
-        <span class="model-name">unsloth/gemma-4-E4B-it-GGUF</span>
-        <span class="model-quant">Q4_K_M · ~5 GB</span>
-      </div>
+      {#if llmEnabled}
+        <div class="model-row">
+          <span class="model-name">unsloth/gemma-4-E4B-it-GGUF</span>
+          <span class="model-quant">Q4_K_M · ~5 GB</span>
+        </div>
+      {/if}
     </div>
+
+    {#if !downloading}
+      <label class="llm-toggle">
+        <input type="checkbox" bind:checked={llmEnabled} />
+        <span class="llm-toggle-body">
+          <span class="llm-toggle-title">Włącz AI streszczenia notatek</span>
+          <span class="llm-toggle-desc">
+            Pobierze dodatkowy model (~5 GB). Możesz zmienić to później w Ustawieniach.
+          </span>
+        </span>
+      </label>
+    {/if}
 
     <div class="action">
       {#if !downloading}
         <button class="btn btn-solid download-btn" onclick={handleDownload}>
-          Pobierz modele
+          {llmEnabled ? "Pobierz modele" : "Pobierz model ASR"}
         </button>
-        <p class="hint">Łącznie ok. 5,8 GB · jednorazowo</p>
+        <p class="hint">
+          {llmEnabled ? "Łącznie ok. 5,8 GB · jednorazowo" : "Ok. 800 MB · jednorazowo"}
+        </p>
       {:else}
         <div class="progress-container">
           <div class="progress-bar">
@@ -267,6 +284,42 @@
     font-size: 12px;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
+  }
+
+  .llm-toggle {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    max-width: 360px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-subtle);
+    margin-bottom: 20px;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .llm-toggle input {
+    margin-top: 2px;
+  }
+
+  .llm-toggle-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .llm-toggle-title {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .llm-toggle-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
   }
 
   .error {

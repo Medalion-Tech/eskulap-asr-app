@@ -9,9 +9,11 @@
   onMount(async () => {
     try {
       const whisperExists: boolean = await invoke("check_model_exists");
+      const settings = await invoke<{ llm_enabled: boolean }>("get_settings");
       const llmExists: boolean = await invoke("check_llm_model_exists");
 
-      if (!whisperExists || !llmExists) {
+      // Missing whisper always blocks; missing LLM only blocks if user wants LLM.
+      if (!whisperExists || (settings.llm_enabled && !llmExists)) {
         $screen = "setup";
         return;
       }
@@ -19,8 +21,7 @@
       $screen = "loading";
       $statusMessage = "Ładowanie modelu ASR…";
       await invoke("load_model");
-      $statusMessage = "Ładowanie modelu LLM…";
-      await invoke("load_llm_model");
+      // LLM loads lazily on first use — skip eager load.
 
       const savedNotes = await invoke<
         Array<{
