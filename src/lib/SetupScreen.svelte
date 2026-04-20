@@ -1,36 +1,86 @@
 <script lang="ts">
   import { invoke, Channel } from "@tauri-apps/api/core";
-  import { screen, downloadProgress, statusMessage, notes } from "./stores";
-  import { MODEL_REPO, MODEL_QUANTIZATION } from "./model-info";
+  import {
+    screen,
+    downloadProgress,
+    downloadStage,
+    statusMessage,
+    notes,
+    templates,
+  } from "./stores";
 
   let downloading = $state(false);
   let error = $state("");
 
+  interface DlProgress {
+    stage: string;
+    downloaded: number;
+    total: number;
+    percent: number;
+  }
+
+  async function runDownloadStage(
+    cmd: string,
+    label: string
+  ): Promise<void> {
+    $downloadProgress = 0;
+    $statusMessage = label;
+    const onProgress = new Channel<DlProgress>();
+    onProgress.onmessage = (p) => {
+      $downloadStage = p.stage;
+      $downloadProgress = Math.round(p.percent);
+    };
+    await invoke(cmd, { onProgress });
+    $downloadProgress = 100;
+  }
+
   async function handleDownload() {
     downloading = true;
     error = "";
-    $statusMessage = "Pobieranie modelu…";
 
     try {
-      const onProgress = new Channel<{
-        downloaded: number;
-        total: number;
-        percent: number;
-      }>();
-      onProgress.onmessage = (progress) => {
-        $downloadProgress = Math.round(progress.percent);
-      };
+      const whisperExists: boolean = await invoke("check_model_exists");
+      const llmExists: boolean = await invoke("check_llm_model_exists");
 
-      await invoke("download_model", { onProgress });
-      $downloadProgress = 100;
-      $statusMessage = "Ładowanie modelu…";
+      const stages: Array<{ cmd: string; label: string }> = [];
+      if (!whisperExists) {
+        stages.push({
+          cmd: "download_model",
+          label: "Pobieranie modelu ASR…",
+        });
+      }
+      if (!llmExists) {
+        stages.push({
+          cmd: "download_llm_model",
+          label: "Pobieranie modelu LLM…",
+        });
+      }
 
+      for (let i = 0; i < stages.length; i++) {
+        const s = stages[i];
+        const label =
+          stages.length > 1 ? `${s.label} (${i + 1}/${stages.length})` : s.label;
+        await runDownloadStage(s.cmd, label);
+      }
+
+      $statusMessage = "Ładowanie modelu ASR…";
       await invoke("load_model");
 
+      $statusMessage = "Ładowanie modelu LLM…";
+      await invoke("load_llm_model");
+
       const savedNotes = await invoke<
-        Array<{ id: string; timestamp: string; text: string }>
+        Array<{
+          id: string;
+          timestamp: string;
+          text: string;
+          raw_transcription?: string | null;
+          template_id?: string | null;
+          template_name?: string | null;
+        }>
       >("get_notes");
       $notes = savedNotes.map((n) => ({ ...n, selected: false }));
+      $templates = await invoke("get_templates");
 
       $statusMessage = "";
       $screen = "main";
@@ -53,24 +103,25 @@
       </svg>
     </div>
     <h1>Eskulap ASR</h1>
-    <p class="subtitle">Transkrypcja mowy medycznej</p>
+    <p class="subtitle">Transkrypcja mowy medycznej + szablony notatek</p>
 
-    <a
-      class="model-link"
-      href="https://huggingface.co/{MODEL_REPO}"
-      target="_blank"
-      rel="noreferrer"
-    >
-      <span class="model-name">{MODEL_REPO}</span>
-      <span class="model-quant">{MODEL_QUANTIZATION}</span>
-    </a>
+    <div class="models">
+      <div class="model-row">
+        <span class="model-name">lion-ai/eskulap-asr-turbo-beta</span>
+        <span class="model-quant">Q8_0 · ~800 MB</span>
+      </div>
+      <div class="model-row">
+        <span class="model-name">unsloth/gemma-4-E4B-it-GGUF</span>
+        <span class="model-quant">Q4_K_M · ~5 GB</span>
+      </div>
+    </div>
 
     <div class="action">
       {#if !downloading}
         <button class="btn btn-solid download-btn" onclick={handleDownload}>
-          Pobierz model
+          Pobierz modele
         </button>
-        <p class="hint">Około 800 MB · jednorazowo</p>
+        <p class="hint">Łącznie ok. 5,8 GB · jednorazowo</p>
       {:else}
         <div class="progress-container">
           <div class="progress-bar">
@@ -122,7 +173,7 @@
 
   .logo {
     color: var(--accent);
-    margin-bottom: 16px;
+    margin-bottom: 14px;
   }
 
   h1 {
@@ -136,29 +187,27 @@
   .subtitle {
     color: var(--text-muted);
     font-size: 14px;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
     letter-spacing: -0.005em;
   }
 
-  .model-link {
+  .models {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 28px;
+  }
+
+  .model-row {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     font-size: 11px;
     color: var(--text-muted);
-    text-decoration: none;
     padding: 4px 10px;
     border-radius: 6px;
     border: 1px solid var(--border);
     background: var(--bg-subtle);
-    margin-bottom: 36px;
-    transition: border-color var(--duration-fast) var(--easing),
-      color var(--duration-fast) var(--easing);
-  }
-
-  .model-link:hover {
-    border-color: var(--border-strong);
-    color: var(--text-secondary);
   }
 
   .model-name {
@@ -196,7 +245,7 @@
   }
 
   .progress-container {
-    width: 320px;
+    width: 340px;
   }
 
   .progress-bar {

@@ -1,0 +1,12 @@
+# whisper-rs and llama-cpp-4 both vendor their own copy of ggml statically.
+# Every ggml_backend_* symbol ends up defined twice at link time.
+# macOS Mach-O linker tolerates this silently, but:
+#  - Linux rust-lld treats it as a hard error → need --allow-multiple-definition
+#  - Windows link.exe (MSVC) emits LNK2005 → need /FORCE:MULTIPLE
+# First-definition-wins matches macOS behavior. Safe because both crates
+# target the same ggml ABI.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/FORCE:MULTIPLE"]

@@ -1,10 +1,18 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, Channel } from "@tauri-apps/api/core";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-  import { notes, statusMessage } from "./stores";
+  import {
+    notes,
+    statusMessage,
+    templates,
+    isGenerating,
+    generationPreview,
+  } from "./stores";
+  import type { Note } from "./stores";
 
   let compiled = $state("");
   let showCompiled = $state(false);
+  let regenerateFor: Note | null = $state(null);
 
   const selectedCount = $derived($notes.filter((n) => n.selected).length);
   const allSelected = $derived(
@@ -26,6 +34,54 @@
     e.stopPropagation();
     await invoke("delete_note", { id });
     $notes = $notes.filter((n) => n.id !== id);
+  }
+
+  function openRegenerate(note: Note, e: MouseEvent) {
+    e.stopPropagation();
+    regenerateFor = note;
+  }
+
+  async function regenerateWithTemplate(tmplId: string) {
+    if (!regenerateFor || !regenerateFor.raw_transcription) return;
+    const note = regenerateFor;
+    const tmpl = $templates.find((t) => t.id === tmplId);
+    if (!tmpl) return;
+
+    regenerateFor = null;
+    $isGenerating = true;
+    $generationPreview = "";
+    $statusMessage = `Regeneracja – ${tmpl.name}…`;
+
+    const onToken = new Channel<string>();
+    onToken.onmessage = (piece: string) => {
+      $generationPreview += piece;
+    };
+
+    try {
+      const formatted: string = await invoke("generate_from_template", {
+        templateId: tmplId,
+        rawTranscription: note.raw_transcription,
+        onToken,
+      });
+      const updated = await invoke<Note>("update_note_with_template", {
+        id: note.id,
+        text: formatted.trim(),
+        templateId: tmplId,
+        templateName: tmpl.name,
+      });
+      if (updated) {
+        $notes = $notes.map((n) =>
+          n.id === updated.id ? { ...updated, selected: n.selected } : n
+        );
+      }
+      $statusMessage = "Notatka zregenerowana";
+      setTimeout(() => ($statusMessage = ""), 1500);
+    } catch (e: any) {
+      $statusMessage = `Błąd: ${e}`;
+    } finally {
+      $isGenerating = false;
+      $generationPreview = "";
+    }
   }
 
   function getTitle(text: string): string {
@@ -77,6 +133,38 @@
     compiled = "";
   }
 </script>
+
+{#if regenerateFor}
+  <section class="regen-modal" role="dialog" aria-modal="true">
+    <div class="regen-card">
+      <header class="regen-header">
+        <h3>Wybierz szablon do regeneracji</h3>
+        <button class="btn btn-ghost btn-sm" onclick={() => (regenerateFor = null)}>
+          Anuluj
+        </button>
+      </header>
+      <p class="regen-hint">
+        Notatka zostanie wygenerowana ponownie na bazie oryginalnej transkrypcji.
+      </p>
+      <ul class="regen-list">
+        {#each $templates as t (t.id)}
+          <li>
+            <button
+              class="regen-item"
+              class:current={t.id === regenerateFor.template_id}
+              onclick={() => regenerateWithTemplate(t.id)}
+            >
+              <span class="regen-name">{t.name}</span>
+              {#if t.description}
+                <span class="regen-desc">{t.description}</span>
+              {/if}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  </section>
+{/if}
 
 {#if showCompiled}
   <section class="compiled">
@@ -149,6 +237,20 @@
                   </div>
                   {#if getPreview(note.text)}
                     <div class="note-preview">{getPreview(note.text)}</div>
+                  {/if}
+                  {#if note.template_name}
+                    <div class="note-meta">
+                      <span class="template-badge">{note.template_name}</span>
+                      {#if note.raw_transcription}
+                        <button
+                          class="regen-btn"
+                          onclick={(e) => openRegenerate(note, e)}
+                          title="Zregeneruj z innym szablonem"
+                        >
+                          Zregeneruj
+                        </button>
+                      {/if}
+                    </div>
                   {/if}
                 </div>
                 <button
@@ -371,11 +473,45 @@
     line-height: 1.4;
   }
 
+  .note-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .template-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--accent-soft-bg);
+    color: var(--accent-text);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .regen-btn {
+    font-size: 11px;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    padding: 1px 8px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--easing),
+      color var(--duration-fast) var(--easing);
+  }
+
+  .regen-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+
   .note-delete {
     position: absolute;
-    top: 50%;
+    top: 10px;
     right: 10px;
-    transform: translateY(-50%);
     width: 24px;
     height: 24px;
     border-radius: 6px;
@@ -439,5 +575,100 @@
     overflow-y: auto;
     color: var(--text);
     letter-spacing: -0.005em;
+  }
+
+  /* Regenerate modal */
+  .regen-modal {
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, var(--gray-12) 40%, transparent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 20px;
+  }
+
+  .regen-card {
+    width: 100%;
+    max-width: 420px;
+    max-height: 80vh;
+    overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .regen-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .regen-header h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .regen-hint {
+    padding: 8px 16px;
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--bg-subtle);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .regen-list {
+    list-style: none;
+    margin: 0;
+    padding: 6px;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .regen-list li {
+    list-style: none;
+  }
+
+  .regen-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: 8px 10px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm, 6px);
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--easing);
+  }
+
+  .regen-item:hover {
+    background: var(--bg-hover);
+  }
+
+  .regen-item.current {
+    background: var(--accent-soft-bg);
+  }
+
+  .regen-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .regen-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
   }
 </style>

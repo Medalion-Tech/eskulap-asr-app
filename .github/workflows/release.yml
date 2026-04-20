@@ -118,6 +118,15 @@ jobs:
           # Ensure CUDA architectures are set (support common GeForce cards)
           echo "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90" >> $GITHUB_ENV
 
+      - name: Fetch Rust dependencies (for patch step)
+        shell: bash
+        working-directory: src-tauri
+        run: cargo fetch
+
+      - name: Patch llama.cpp (Gemma 4 E4B FGDN_AR workaround)
+        shell: bash
+        run: bash scripts/patch-llama-cpp.sh
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
