@@ -1,366 +1,485 @@
+use crate::ast::{
+    deterministic_slot_id, FilledTemplate, FilledValue, Inline, Node, PickOption, Slot, SlotId,
+    TemplateAst,
+};
 use crate::templates::Template;
+use std::collections::BTreeMap;
 
-const BUILTIN_TIMESTAMP: &str = "2026-04-17 00:00:00";
+const BUILTIN_TIMESTAMP: &str = "2026-04-20 00:00:00";
 
 pub fn all() -> Vec<Template> {
-    vec![
-        soap_visit(),
-        hospital_discharge(),
-        imaging_report(),
-        consultation_letter(),
-        surgery_protocol(),
-    ]
+    vec![poz_visit(), imaging_chest(), discharge_v2()]
+}
+
+// ---------- Helpers ----------
+
+struct Builder {
+    template_id: String,
+    nodes: Vec<Node>,
+    slots: BTreeMap<SlotId, Slot>,
+}
+
+impl Builder {
+    fn new(template_id: &str) -> Self {
+        Self {
+            template_id: template_id.to_string(),
+            nodes: Vec::new(),
+            slots: BTreeMap::new(),
+        }
+    }
+
+    fn sid(&self, name: &str) -> SlotId {
+        deterministic_slot_id(&self.template_id, name)
+    }
+
+    fn heading(mut self, level: u8, text: &str) -> Self {
+        self.nodes.push(Node::Heading {
+            level,
+            inlines: vec![Inline::Text { text: text.to_string() }],
+        });
+        self
+    }
+
+    fn para_text(mut self, text: &str) -> Self {
+        self.nodes.push(Node::Paragraph {
+            inlines: vec![Inline::Text { text: text.to_string() }],
+        });
+        self
+    }
+
+    /// A paragraph like `label<slot>` — label text followed by one inline slot.
+    fn labeled_field(mut self, label: &str, name: &str, hint: Option<&str>) -> Self {
+        let id = self.sid(name);
+        self.slots.insert(
+            id.clone(),
+            Slot::Field {
+                id: id.clone(),
+                name: name.to_string(),
+                hint: hint.map(|s| s.to_string()),
+                default: None,
+            },
+        );
+        self.nodes.push(Node::Paragraph {
+            inlines: vec![
+                Inline::Text { text: label.to_string() },
+                Inline::Slot { id },
+            ],
+        });
+        self
+    }
+
+    fn labeled_pick(
+        mut self,
+        label: &str,
+        name: &str,
+        options: &[(&str, &str)],
+        allow_other: bool,
+    ) -> Self {
+        let id = self.sid(name);
+        let mut opts: Vec<PickOption> = options
+            .iter()
+            .map(|(c, t)| PickOption { code: c.to_string(), text: t.to_string() })
+            .collect();
+        // Always ensure X (nieokreślone) is present.
+        if !opts.iter().any(|o| o.code == "X") {
+            opts.push(PickOption { code: "X".to_string(), text: "nieokreślone".to_string() });
+        }
+        self.slots.insert(
+            id.clone(),
+            Slot::Pick {
+                id: id.clone(),
+                name: name.to_string(),
+                hint: None,
+                options: opts,
+                allow_other,
+            },
+        );
+        self.nodes.push(Node::Paragraph {
+            inlines: vec![
+                Inline::Text { text: label.to_string() },
+                Inline::Slot { id },
+            ],
+        });
+        self
+    }
+
+    fn longtext_block(mut self, name: &str, hint: Option<&str>) -> Self {
+        let id = self.sid(name);
+        self.slots.insert(
+            id.clone(),
+            Slot::Longtext {
+                id: id.clone(),
+                name: name.to_string(),
+                hint: hint.map(|s| s.to_string()),
+            },
+        );
+        self.nodes.push(Node::SlotBlock { id });
+        self
+    }
+
+    fn list_block(mut self, name: &str, hint: Option<&str>, numbered: bool) -> Self {
+        let id = self.sid(name);
+        self.slots.insert(
+            id.clone(),
+            Slot::List {
+                id: id.clone(),
+                name: name.to_string(),
+                hint: hint.map(|s| s.to_string()),
+                numbered,
+            },
+        );
+        self.nodes.push(Node::SlotBlock { id });
+        self
+    }
+
+    fn build(self) -> TemplateAst {
+        TemplateAst {
+            nodes: self.nodes,
+            slots: self.slots,
+        }
+    }
 }
 
 fn builtin(
     id: &str,
     name: &str,
     description: &str,
-    content: &str,
+    ast: TemplateAst,
     example_input: &str,
-    example_output: &str,
+    example_filled: FilledTemplate,
 ) -> Template {
     Template {
         id: id.to_string(),
         name: name.to_string(),
         description: description.to_string(),
-        content: content.to_string(),
+        ast,
         example_input: Some(example_input.to_string()),
-        example_output: Some(example_output.to_string()),
+        example_filled: Some(example_filled),
         is_builtin: true,
         created_at: BUILTIN_TIMESTAMP.to_string(),
         updated_at: BUILTIN_TIMESTAMP.to_string(),
-        schema: None,
-        system_prompt: None,
+        ast_version: 1,
     }
 }
 
-fn soap_visit() -> Template {
-    let content = "Przekształć dyktowanie w ustrukturyzowaną notatkę z wizyty ambulatoryjnej (SOAP).
+fn sid(template_id: &str, name: &str) -> SlotId {
+    deterministic_slot_id(template_id, name)
+}
 
-Struktura wyjściowa:
+fn text_val(s: &str) -> FilledValue {
+    FilledValue::Text { text: s.to_string() }
+}
 
-WYWIAD
-  - Dolegliwość główna (1 zdanie)
-  - Historia choroby aktualnej (OLD CART — tyle ile lekarz powiedział)
-  - Choroby przewlekłe / leki na stałe / alergie
+fn pick_val(code: &str) -> FilledValue {
+    FilledValue::Pick { code: code.to_string(), custom_text: None }
+}
 
-BADANIE PRZEDMIOTOWE
-  - Stan ogólny + parametry życiowe (RR, tętno, temperatura)
-  - Badania narządowe (tylko wymienione przez lekarza)
+fn list_val(items: &[&str]) -> FilledValue {
+    FilledValue::List { items: items.iter().map(|s| s.to_string()).collect() }
+}
 
-ROZPOZNANIE
-  - Rozpoznanie główne [ICD-10]
-  - Rozpoznania współistniejące
+// ---------- POZ: wizyta kontrolna ----------
 
-ZALECENIA
-  - Farmakoterapia (nazwa, dawka, częstość, czas)
-  - Badania dodatkowe
-  - Kontrola + red flags (czerwone flagi)";
+fn poz_visit() -> Template {
+    let tid = "builtin-poz-visit";
+    let ast = Builder::new(tid)
+        .heading(1, "Wizyta POZ")
+        .labeled_field("Powód wizyty: ", "powod_wizyty", Some("1 zdanie"))
+        .heading(2, "Wywiad")
+        .para_text("Objawy główne:")
+        .longtext_block("objawy_glowne", Some("czas trwania, charakter, dynamika"))
+        .para_text("Leki przewlekłe:")
+        .list_block("leki_przewlekle", Some("nazwa, dawka, częstość"), false)
+        .labeled_field("Alergie: ", "alergie", Some("leki, pokarmy; brak = \"nie zgłasza\""))
+        .heading(2, "Badanie przedmiotowe")
+        .labeled_pick(
+            "Stan ogólny: ",
+            "stan_ogolny",
+            &[("A", "dobry"), ("B", "średni"), ("C", "ciężki")],
+            true,
+        )
+        .labeled_field("RR: ", "cisnienie", Some("np. 130/80 mmHg"))
+        .labeled_field("Tętno: ", "tetno", Some("bpm"))
+        .labeled_field("Temperatura: ", "temperatura", Some("°C"))
+        .para_text("Badanie fizykalne:")
+        .longtext_block("badanie_fizykalne", Some("tylko systemy wymienione przez lekarza"))
+        .heading(2, "Rozpoznanie")
+        .labeled_field("Rozpoznanie główne: ", "rozpoznanie_glowne", Some("z [ICD-10]"))
+        .para_text("Rozpoznania współistniejące:")
+        .list_block("rozpoznania_wspolistniejace", Some("z [ICD-10]"), false)
+        .heading(2, "Zalecenia")
+        .para_text("Farmakoterapia:")
+        .list_block("farmakoterapia", Some("nazwa, dawka, częstość, czas"), true)
+        .para_text("Badania dodatkowe:")
+        .list_block("badania_dodatkowe", Some("laboratoryjne, obrazowe"), false)
+        .labeled_field("Kontrola za: ", "kontrola_za", Some("np. 7 dni"))
+        .para_text("Czerwone flagi:")
+        .longtext_block("czerwone_flagi", Some("kiedy pilnie do SOR"))
+        .build();
 
-    let example_input = "Pacjentka czterdzieści pięć lat, zgłasza się z bólem kręgosłupa lędźwiowego od trzech dni. Ból pojawił się po podnoszeniu cięższego przedmiotu, nasila się przy pochylaniu i długim staniu, łagodzi pozycja leżąca. Sama kupiła ketoprofen, pomaga częściowo. Nie promieniuje do nóg, bez zaburzeń czucia. Choroby przewlekłe: nadciśnienie, bierze ramipril pięć miligramów. Alergii nie zgłasza. W badaniu bolesność palpacyjna okolicy lędźwiowej, napięcie mięśni przykręgosłupowych, Laseque ujemny obustronnie. Ciśnienie sto trzydzieści na osiemdziesiąt. Rozpoznaję zespół bólowy kręgosłupa lędźwiowego. Daję naproksen pięćset dwa razy dziennie przez pięć dni, tyzanidyna dwa miligramy wieczorem, unikanie dźwigania, kontrola za tydzień jeśli nie ustąpi. Poinformowałam o konieczności pilnej wizyty przy drętwieniu nóg lub zaburzeniach oddawania moczu.";
+    let example_input = "Pacjentka czterdzieści pięć lat, zgłasza się z bólem kręgosłupa lędźwiowego od trzech dni. Ból pojawił się po podnoszeniu cięższego przedmiotu, nasila się przy pochylaniu, łagodzi pozycja leżąca. Nie promieniuje do nóg. Choroby przewlekłe: nadciśnienie, bierze ramipril pięć miligramów. Alergii nie zgłasza. W badaniu stan ogólny dobry. Ciśnienie sto trzydzieści na osiemdziesiąt, tętno siedemdziesiąt dwa, temperatura trzydzieści sześć i sześć. Bolesność palpacyjna okolicy lędźwiowej, napięcie mięśni przykręgosłupowych, Laseque ujemny obustronnie. Rozpoznaję zespół bólowy kręgosłupa lędźwiowego. Daję naproksen pięćset dwa razy dziennie przez pięć dni, tyzanidyna dwa miligramy wieczorem. Zalecam unikanie dźwigania. Kontrola za tydzień. Pilna wizyta przy drętwieniu nóg lub zaburzeniach oddawania moczu.";
 
-    let example_output = "WYWIAD
-Dolegliwość główna: ból kręgosłupa L/S od 3 dni.
-Początek po podnoszeniu ciężkiego przedmiotu. Ból mechaniczny, nasila się przy pochylaniu i długotrwałej pozycji stojącej, łagodzi pozycja leżąca.
-Ketoprofen OTC – z częściową poprawą.
-Bez promieniowania do kończyn dolnych, bez zaburzeń czucia.
+    let mut values = BTreeMap::new();
+    values.insert(sid(tid, "powod_wizyty"), text_val("ból kręgosłupa L/S od 3 dni"));
+    values.insert(
+        sid(tid, "objawy_glowne"),
+        text_val("Ból pojawił się po podnoszeniu ciężkiego przedmiotu, nasila się przy pochylaniu, łagodzi pozycja leżąca. Bez promieniowania do kończyn dolnych."),
+    );
+    values.insert(
+        sid(tid, "leki_przewlekle"),
+        list_val(&["ramipril 5 mg 1×/d"]),
+    );
+    values.insert(sid(tid, "alergie"), text_val("nie zgłasza"));
+    values.insert(sid(tid, "stan_ogolny"), pick_val("A"));
+    values.insert(sid(tid, "cisnienie"), text_val("130/80 mmHg"));
+    values.insert(sid(tid, "tetno"), text_val("72 bpm"));
+    values.insert(sid(tid, "temperatura"), text_val("36,6°C"));
+    values.insert(
+        sid(tid, "badanie_fizykalne"),
+        text_val("Bolesność palpacyjna okolicy lędźwiowej, wzmożone napięcie mięśni przykręgosłupowych. Objaw Lasègue'a ujemny obustronnie."),
+    );
+    values.insert(
+        sid(tid, "rozpoznanie_glowne"),
+        text_val("Zespół bólowy kręgosłupa odcinka lędźwiowego [ICD-10: M54.5]"),
+    );
+    values.insert(
+        sid(tid, "rozpoznania_wspolistniejace"),
+        list_val(&["Nadciśnienie tętnicze [ICD-10: I10]"]),
+    );
+    values.insert(
+        sid(tid, "farmakoterapia"),
+        list_val(&[
+            "Naproksen 500 mg 2×/d przez 5 dni (po posiłku)",
+            "Tyzanidyna 2 mg wieczorem",
+        ]),
+    );
+    values.insert(sid(tid, "badania_dodatkowe"), FilledValue::Unfilled);
+    values.insert(sid(tid, "kontrola_za"), text_val("7 dni"));
+    values.insert(
+        sid(tid, "czerwone_flagi"),
+        text_val("Pilna wizyta w razie drętwienia kończyn dolnych, osłabienia siły mięśniowej, zaburzeń oddawania moczu lub stolca."),
+    );
 
-Choroby przewlekłe: nadciśnienie tętnicze.
-Leki na stałe: ramipril 5 mg 1×/d.
-Alergie: brak zgłaszanych.
-
-BADANIE PRZEDMIOTOWE
-Stan ogólny dobry. RR 130/80 mmHg.
-Kręgosłup: bolesność palpacyjna okolicy lędźwiowej, wzmożone napięcie mięśni przykręgosłupowych.
-Objaw Lasègue'a ujemny obustronnie.
-
-ROZPOZNANIE
-Zespół bólowy kręgosłupa odcinka lędźwiowego [ICD-10: M54.5]
-Nadciśnienie tętnicze – kontrolowane [ICD-10: I10]
-
-ZALECENIA
-1. Naproksen 500 mg – 1 tabl. 2×/d przez 5 dni (po posiłku).
-2. Tyzanidyna 2 mg – 1 tabl. wieczorem.
-3. Unikać dźwigania ciężarów i długotrwałej pozycji wymuszonej.
-4. Kontrola za 7 dni w razie braku poprawy.
-5. Pilna wizyta w razie: drętwienia kończyn dolnych, osłabienia siły mięśniowej, zaburzeń oddawania moczu/stolca.";
+    let example_filled = FilledTemplate {
+        template_id: tid.to_string(),
+        values,
+        user_edited: Vec::new(),
+    };
 
     builtin(
-        "builtin-soap",
-        "Wizyta SOAP",
-        "Ambulatoryjna wizyta, struktura wywiad / badanie / rozpoznanie / zalecenia",
-        content,
+        tid,
+        "Wizyta POZ — kontrola",
+        "Wizyta rodzinna (POZ): wywiad, badanie, rozpoznanie, zalecenia",
+        ast,
         example_input,
-        example_output,
+        example_filled,
     )
 }
 
-fn hospital_discharge() -> Template {
-    let content = "Przekształć dyktowaną epikryzę w kartę informacyjną z leczenia szpitalnego zgodną z polskimi standardami dokumentacji medycznej. Procedury wykonane podawaj z kodami ICD-9 (nie ICD-10). Epikryza powinna być narracyjna — jeden logicznie spójny akapit.
+// ---------- Radiologia: TK/MR klatki piersiowej ----------
 
-Struktura wyjściowa:
+fn imaging_chest() -> Template {
+    let tid = "builtin-imaging-chest";
+    let ast = Builder::new(tid)
+        .heading(1, "Opis badania obrazowego klatki piersiowej")
+        .labeled_pick(
+            "Typ badania: ",
+            "typ_badania",
+            &[
+                ("A", "TK bez kontrastu"),
+                ("B", "TK z kontrastem"),
+                ("C", "MR"),
+            ],
+            true,
+        )
+        .labeled_field("Wskazanie: ", "wskazanie", None)
+        .labeled_field("Porównanie z dnia: ", "porownanie_z_dnia", Some("data lub \"brak\""))
+        .heading(2, "Opis")
+        .para_text("Płuco prawe:")
+        .longtext_block("pluca_prawe", None)
+        .para_text("Płuco lewe:")
+        .longtext_block("pluca_lewe", None)
+        .labeled_pick(
+            "Opłucna: ",
+            "oplucna",
+            &[("A", "bez zmian"), ("B", "wysięk"), ("C", "odma")],
+            true,
+        )
+        .para_text("Śródpiersie:")
+        .longtext_block("srodpiersie", Some("węzły chłonne, struktury naczyniowe"))
+        .labeled_pick(
+            "Serce: ",
+            "serce_wielkosc",
+            &[("A", "prawidłowej wielkości"), ("B", "powiększone")],
+            true,
+        )
+        .para_text("Kości (kręgosłup, żebra, mostek):")
+        .longtext_block("kosci", None)
+        .heading(2, "Wnioski")
+        .list_block("wnioski", Some("od najistotniejszego"), true)
+        .para_text("Sugerowana dalsza diagnostyka:")
+        .longtext_block("dalsza_diagnostyka", Some("opcjonalnie"))
+        .build();
 
-ROZPOZNANIE GŁÓWNE [ICD-10]
-ROZPOZNANIA WSPÓŁISTNIEJĄCE [ICD-10]
-PROCEDURY WYKONANE [ICD-9]
+    let example_input = "TK klatki piersiowej bez kontrastu, wskazanie przewlekły kaszel. Bez badania porównawczego. Płuco prawe prawidłowe upowietrznienie, w segmencie tylnym płata górnego drobny lity guzek około sześć milimetrów, niespecyficzny. Płuco lewe bez zmian ogniskowych. Opłucna bez wysięku i bez odmy. Śródpiersie bez powiększenia węzłów chłonnych, aorta i pień płucny prawidłowe. Serce prawidłowej wielkości. Kości bez zmian ogniskowych. Wnioski: drobny guzek płuca prawego do obserwacji. Kontrolne TK za trzy miesiące zgodnie z protokołem Fleischnera.";
 
-EPIKRYZA
-  - Powód hospitalizacji (1-2 zdania)
-  - Stan przy przyjęciu
-  - Kluczowe badania diagnostyczne
-  - Przebieg leczenia
-  - Stan przy wypisie
+    let mut values = BTreeMap::new();
+    values.insert(sid(tid, "typ_badania"), pick_val("A"));
+    values.insert(sid(tid, "wskazanie"), text_val("przewlekły kaszel"));
+    values.insert(sid(tid, "porownanie_z_dnia"), text_val("brak"));
+    values.insert(
+        sid(tid, "pluca_prawe"),
+        text_val("Prawidłowe upowietrznienie. W segmencie tylnym płata górnego drobny lity guzek ok. 6 mm, niespecyficzny."),
+    );
+    values.insert(sid(tid, "pluca_lewe"), text_val("Bez zmian ogniskowych."));
+    values.insert(sid(tid, "oplucna"), pick_val("A"));
+    values.insert(
+        sid(tid, "srodpiersie"),
+        text_val("Bez powiększenia węzłów chłonnych. Aorta i pień płucny o prawidłowej szerokości."),
+    );
+    values.insert(sid(tid, "serce_wielkosc"), pick_val("A"));
+    values.insert(sid(tid, "kosci"), text_val("Bez zmian ogniskowych."));
+    values.insert(
+        sid(tid, "wnioski"),
+        list_val(&[
+            "Drobny guzek płuca prawego (~6 mm) — do obserwacji.",
+            "Poza tym klatka piersiowa bez istotnych zmian.",
+        ]),
+    );
+    values.insert(
+        sid(tid, "dalsza_diagnostyka"),
+        text_val("Kontrolne TK klatki piersiowej za 3 miesiące zgodnie z protokołem Fleischnera."),
+    );
 
-ZALECENIA
-  - Farmakoterapia
-  - Dieta, aktywność, opieka nad raną
-  - Kontrole + skierowania
-  - Red flags — kiedy pilnie do SOR
-
-ORZECZENIE O NIEZDOLNOŚCI DO PRACY";
-
-    let example_input = "Pacjent sześćdziesiąt dwa lata, przyjęty w trybie ostrym z SOR z powodu ostrego bólu prawego dolnego kwadranta brzucha od osiemnastu godzin, z nudnościami i stanem podgorączkowym. Przy przyjęciu obrona mięśniowa w prawym dole biodrowym, Blumberg dodatni. Leukocytoza piętnaście tysięcy, CRP dziewięćdziesiąt osiem. Tomografia potwierdziła ostre zapalenie wyrostka bez perforacji. W trybie pilnym appendektomia laparoskopowa, przebieg niepowikłany. Pooperacyjnie ceftriakson i metronidazol przez trzy doby, profilaktyka przeciwzakrzepowa enoksaparyną. Pierwsza doba gorączka do trzydziestu ośmiu i pięć, potem bezgorączkowy, rana goi się prawidłowo. Wypis w stanie dobrym. Ciprofloksacyna pięćset dwa razy dziennie i metronidazol pięćset trzy razy dziennie przez pięć dni, paracetamol w razie bólu, wymiany opatrunku co drugi dzień, zdjęcie szwów za dziesięć dni u lekarza rodzinnego, oszczędzający tryb życia dwa tygodnie, niezdolność do pracy czternaście dni.";
-
-    let example_output = "ROZPOZNANIE GŁÓWNE
-Ostre zapalenie wyrostka robaczkowego bez perforacji [ICD-10: K35.80]
-
-PROCEDURY WYKONANE
-Appendektomia laparoskopowa [ICD-9: 47.01]
-
-EPIKRYZA
-62-letni pacjent przyjęty w trybie ostrym z SOR z powodu ostrego bólu prawego dolnego kwadranta jamy brzusznej trwającego od ok. 18 godzin, z towarzyszącymi nudnościami i stanem podgorączkowym. Przy przyjęciu stwierdzono obronę mięśniową w prawym dole biodrowym, dodatni objaw Blumberga. W badaniach laboratoryjnych: leukocytoza 15 tys./µl, CRP 98 mg/l. W TK jamy brzusznej obraz ostrego zapalenia wyrostka robaczkowego bez cech perforacji. W trybie pilnym wykonano appendektomię laparoskopową – przebieg zabiegu niepowikłany. Pooperacyjnie stosowano ceftriakson i metronidazol przez 3 doby oraz profilaktykę przeciwzakrzepową enoksaparyną. W 1. dobie pooperacyjnej gorączka do 38,5°C, następnie bezgorączkowy. Rana operacyjna goi się prawidłowo, bez cech zapalenia. Wypisywany w stanie ogólnym dobrym.
-
-ZALECENIA
-1. Ciprofloksacyna 500 mg – 1 tabl. 2×/d przez 5 dni.
-2. Metronidazol 500 mg – 1 tabl. 3×/d przez 5 dni.
-3. Paracetamol 500 mg doraźnie przy bólu (max 4×/d).
-4. Zmiana opatrunku co 2 dni; szwy do usunięcia w 10. dobie pooperacyjnej u lekarza POZ.
-5. Oszczędzający tryb życia przez 2 tygodnie; bez dźwigania >5 kg.
-6. Pilne zgłoszenie do SOR w razie: gorączki >38,5°C, nasilającego się bólu brzucha, wymiotów, zaczerwienienia/wycieku z rany.
-
-ORZECZENIE O NIEZDOLNOŚCI DO PRACY
-Niezdolny do pracy przez 14 dni od daty wypisu.";
+    let example_filled = FilledTemplate {
+        template_id: tid.to_string(),
+        values,
+        user_edited: Vec::new(),
+    };
 
     builtin(
-        "builtin-discharge",
+        tid,
+        "TK/MR klatki piersiowej",
+        "Strukturalny opis badania obrazowego klatki piersiowej",
+        ast,
+        example_input,
+        example_filled,
+    )
+}
+
+// ---------- Szpital: karta wypisowa ----------
+
+fn discharge_v2() -> Template {
+    let tid = "builtin-discharge-v2";
+    let ast = Builder::new(tid)
+        .heading(1, "Karta wypisowa")
+        .labeled_field("Rozpoznanie główne: ", "rozpoznanie_glowne", Some("z [ICD-10]"))
+        .para_text("Rozpoznania współistniejące:")
+        .list_block("rozpoznania_wspolistniejace", Some("z [ICD-10]"), false)
+        .para_text("Procedury wykonane:")
+        .list_block("procedury_wykonane", Some("z [ICD-9]"), false)
+        .heading(2, "Epikryza")
+        .para_text("Powód hospitalizacji:")
+        .longtext_block("powod_hospitalizacji", Some("1-2 zdania"))
+        .para_text("Stan przy przyjęciu:")
+        .longtext_block("stan_przy_przyjeciu", None)
+        .para_text("Kluczowe badania diagnostyczne:")
+        .longtext_block("kluczowe_badania", Some("lab, obrazowe"))
+        .para_text("Przebieg leczenia:")
+        .longtext_block("przebieg_leczenia", Some("narracyjnie, jeden akapit"))
+        .labeled_pick(
+            "Stan przy wypisie: ",
+            "stan_przy_wypisie",
+            &[("A", "dobry"), ("B", "średni"), ("C", "ciężki")],
+            true,
+        )
+        .heading(2, "Zalecenia")
+        .para_text("Farmakoterapia:")
+        .list_block("farmakoterapia", Some("nazwa, dawka, częstość, czas"), true)
+        .para_text("Dieta i aktywność:")
+        .longtext_block("dieta_aktywnosc", None)
+        .para_text("Opieka nad raną:")
+        .longtext_block("opieka_nad_rana", Some("jeśli dotyczy"))
+        .para_text("Kontrole:")
+        .list_block("kontrole", Some("gdzie, kiedy, w jakim celu"), true)
+        .para_text("Skierowania:")
+        .list_block("skierowania", None, false)
+        .para_text("Red flags (pilne do SOR):")
+        .longtext_block("red_flags", None)
+        .labeled_field(
+            "Niezdolność do pracy: ",
+            "niezdolnosc_do_pracy_dni",
+            Some("liczba dni lub \"nie orzeczono\""),
+        )
+        .build();
+
+    let example_input = "Pacjent sześćdziesiąt dwa lata, przyjęty w trybie ostrym z SOR z powodu ostrego bólu prawego dolnego kwadranta brzucha od osiemnastu godzin, z nudnościami. Przy przyjęciu obrona mięśniowa w prawym dole biodrowym, Blumberg dodatni. Leukocytoza piętnaście tysięcy, CRP dziewięćdziesiąt osiem. Tomografia potwierdziła ostre zapalenie wyrostka. W trybie pilnym appendektomia laparoskopowa, przebieg niepowikłany. Pooperacyjnie ceftriakson i metronidazol przez trzy doby, profilaktyka enoksaparyną. Pierwsza doba gorączka trzydzieści osiem pięć, potem bezgorączkowy. Rana goi się prawidłowo. Wypis w stanie dobrym. Ciprofloksacyna pięćset dwa razy dziennie i metronidazol pięćset trzy razy dziennie przez pięć dni. Dieta lekkostrawna, oszczędzający tryb życia dwa tygodnie. Wymiana opatrunku co drugi dzień, zdjęcie szwów za dziesięć dni u lekarza rodzinnego. Kontrola w poradni chirurgicznej za dwa tygodnie. Skierowanie do rehabilitacji nie jest potrzebne. Niezdolność do pracy czternaście dni. Pilny powrót do SOR w razie gorączki powyżej trzydziestu ośmiu pięć lub nasilającego się bólu brzucha.";
+
+    let mut values = BTreeMap::new();
+    values.insert(
+        sid(tid, "rozpoznanie_glowne"),
+        text_val("Ostre zapalenie wyrostka robaczkowego bez perforacji [ICD-10: K35.80]"),
+    );
+    values.insert(sid(tid, "rozpoznania_wspolistniejace"), FilledValue::Unfilled);
+    values.insert(
+        sid(tid, "procedury_wykonane"),
+        list_val(&["Appendektomia laparoskopowa [ICD-9: 47.01]"]),
+    );
+    values.insert(
+        sid(tid, "powod_hospitalizacji"),
+        text_val("Ostry ból prawego dolnego kwadranta brzucha od 18 godzin, z nudnościami."),
+    );
+    values.insert(
+        sid(tid, "stan_przy_przyjeciu"),
+        text_val("Obrona mięśniowa w prawym dole biodrowym, dodatni objaw Blumberga. Leukocytoza 15 tys./µl, CRP 98 mg/l. TK potwierdziła ostre zapalenie wyrostka."),
+    );
+    values.insert(
+        sid(tid, "kluczowe_badania"),
+        text_val("Leukocytoza 15 tys./µl, CRP 98 mg/l. TK jamy brzusznej: obraz ostrego zapalenia wyrostka robaczkowego."),
+    );
+    values.insert(
+        sid(tid, "przebieg_leczenia"),
+        text_val("W trybie pilnym wykonano appendektomię laparoskopową — przebieg niepowikłany. Pooperacyjnie: ceftriakson i metronidazol przez 3 doby, profilaktyka przeciwzakrzepowa enoksaparyną. W 1. dobie pooperacyjnej gorączka do 38,5°C, następnie bezgorączkowy. Rana operacyjna goi się prawidłowo."),
+    );
+    values.insert(sid(tid, "stan_przy_wypisie"), pick_val("A"));
+    values.insert(
+        sid(tid, "farmakoterapia"),
+        list_val(&[
+            "Ciprofloksacyna 500 mg 2×/d przez 5 dni",
+            "Metronidazol 500 mg 3×/d przez 5 dni",
+        ]),
+    );
+    values.insert(
+        sid(tid, "dieta_aktywnosc"),
+        text_val("Dieta lekkostrawna. Oszczędzający tryb życia przez 2 tygodnie, bez dźwigania >5 kg."),
+    );
+    values.insert(
+        sid(tid, "opieka_nad_rana"),
+        text_val("Zmiana opatrunku co 2 dni; szwy do usunięcia w 10. dobie pooperacyjnej u lekarza POZ."),
+    );
+    values.insert(
+        sid(tid, "kontrole"),
+        list_val(&["Poradnia chirurgiczna za 2 tygodnie"]),
+    );
+    values.insert(sid(tid, "skierowania"), FilledValue::Unfilled);
+    values.insert(
+        sid(tid, "red_flags"),
+        text_val("Pilny powrót do SOR w razie gorączki >38,5°C, nasilającego się bólu brzucha, wymiotów lub zaczerwienienia/wycieku z rany."),
+    );
+    values.insert(sid(tid, "niezdolnosc_do_pracy_dni"), text_val("14 dni"));
+
+    let example_filled = FilledTemplate {
+        template_id: tid.to_string(),
+        values,
+        user_edited: Vec::new(),
+    };
+
+    builtin(
+        tid,
         "Karta wypisowa",
-        "Karta informacyjna z leczenia szpitalnego (wypis)",
-        content,
+        "Karta informacyjna z leczenia szpitalnego — strukturalna",
+        ast,
         example_input,
-        example_output,
-    )
-}
-
-fn imaging_report() -> Template {
-    let content = "Przekształć dyktowany opis badania obrazowego w oficjalny opis zgodny ze standardem polskiej radiologii. W sekcji OPIS zachowaj kolejność narządów narzuconą przez typ badania (np. USG jamy brzusznej: wątroba → pęcherzyk → drogi żółciowe → trzustka → śledziona → nerki → pęcherz → aorta → wolny płyn). Wnioski numeruj, bądź zwięzły.
-
-Struktura wyjściowa:
-
-TECHNIKA BADANIA
-  - Typ badania, rodzaj głowicy/sekwencji
-  - Warunki badania (przygotowanie, kontrast)
-
-PORÓWNANIE
-  - Z badaniem z dnia ___ (jeśli podano)
-
-OPIS
-  (systematycznie, narząd po narządzie)
-
-WNIOSKI
-  1. [numerowane znaleziska]
-  2. ...
-  3. Sugerowana dalsza diagnostyka (opcjonalnie)";
-
-    let example_input = "USG jamy brzusznej, pacjent przygotowany na czczo. Wątroba niepowiększona, echostruktura wzmożona, rozlana stłuszczenie, ogniskowych zmian nie widzę. Pęcherzyk żółciowy cienkościenny, w świetle dwa złogi średnicy około ośmiu milimetrów, ruchome. Drogi żółciowe wewnątrz- i zewnątrzwątrobowe nieposzerzone, przewód żółciowy wspólny cztery milimetry. Trzustka bez zmian ogniskowych, widoczna w dostępnym zakresie. Śledziona prawidłowa, dziesięć centymetrów. Nerka prawa i lewa bez złogów, bez zastoju, warstwa miąższowa zachowana. Pęcherz wypełniony, gładka ściana. Aorta brzuszna niepowiększona. Wolnego płynu w jamie otrzewnej nie stwierdzam. Wnioski: kamica pęcherzyka żółciowego, stłuszczenie wątroby. Sugeruję konsultację chirurgiczną w kierunku cholecystektomii.";
-
-    let example_output = "USG JAMY BRZUSZNEJ
-
-TECHNIKA
-Badanie wykonane sondą convex, pacjent na czczo.
-
-OPIS
-Wątroba: niepowiększona, echostruktura wzmożona, rozlana (cechy stłuszczenia). Ognisk patologicznych nie uwidoczniono.
-Pęcherzyk żółciowy: ściana cienka, w świetle 2 ruchome złogi o średnicy ok. 8 mm.
-Drogi żółciowe: wewnątrz- i zewnątrzwątrobowe nieposzerzone. Przewód żółciowy wspólny 4 mm.
-Trzustka: w dostępnym oknie akustycznym bez zmian ogniskowych.
-Śledziona: prawidłowej wielkości (10 cm), echostruktura jednorodna.
-Nerki: obustronnie bez złogów, bez cech zastoju moczu, warstwa miąższowa zachowana.
-Pęcherz moczowy: wypełniony, ściana gładka.
-Aorta brzuszna: niepowiększona.
-Wolnego płynu w jamie otrzewnej nie stwierdzono.
-
-WNIOSKI
-1. Kamica pęcherzyka żółciowego (2 złogi ~8 mm).
-2. Stłuszczenie wątroby.
-3. Sugerowana konsultacja chirurgiczna w kierunku cholecystektomii.";
-
-    builtin(
-        "builtin-imaging",
-        "Opis badania obrazowego",
-        "Systematyczny opis USG/TK/MR z sekcjami: technika, opis, wnioski",
-        content,
-        example_input,
-        example_output,
-    )
-}
-
-fn consultation_letter() -> Template {
-    let content = "Przekształć dyktowane stanowisko specjalisty w oficjalny list konsultacyjny do lekarza kierującego (zwykle POZ). Zachowuj uprzejmy, profesjonalny ton. Używaj formy grzecznościowej „Szanowna Pani Doktor\" / „Szanowny Panie Doktorze\". Jeżeli dane nagłówka/stopki nie są podane, zostaw placeholdery w nawiasach kwadratowych.
-
-Struktura wyjściowa:
-
-[Nagłówek: specjalizacja, miejscowość, data]
-
-Sz. P. dr [imię i nazwisko lekarza kierującego]
-[Miejsce pracy lekarza kierującego]
-
-Dot. pacjenta: [imię i nazwisko], PESEL: [___]
-
-Szanowna Pani Doktor / Szanowny Panie Doktorze,
-
-STRESZCZENIE PROBLEMU (1-2 zdania: kto, z czym przyszedł)
-WYWIAD I DOTYCHCZASOWE LECZENIE
-WYNIKI BADAŃ (istotne)
-
-ROZPOZNANIE
-
-PROPONOWANE POSTĘPOWANIE (numerowane)
-
-KONTROLA / warunki zakończenia opieki specjalistycznej
-
-Z wyrazami szacunku,
-[podpis — autouzupełnienie]";
-
-    let example_input = "List do doktor Nowak. Pacjent pięćdziesiąt osiem lat skierowany z powodu nadciśnienia tętniczego opornego na leczenie dwulekowe, amlodipina pięć i ramipril dziesięć, domowe pomiary sto pięćdziesiąt pięć na dziewięćdziesiąt pięć średnio. Palacz dwadzieścia paczkolat, BMI trzydzieści jeden. W badaniu bez cech niewydolności serca. W ECHO przerost lewej komory, frakcja wyrzutowa sześćdziesiąt procent, bez wad zastawkowych. Holter ciśnieniowy potwierdził nadciśnienie z brakiem spadku nocnego. Badania laboratoryjne w normie, potas cztery i dwa, kreatynina zero osiemdziesiąt pięć. Rozpoznaję nadciśnienie tętnicze trzeciego stopnia z przerostem lewej komory. Włączam indapamid dwa i pół miligrama rano i zalecam zmianę ramiprilu na telmisartan osiemdziesiąt miligramów ze względu na lepszą tolerancję dobową. Odstawienie palenia bezwzględne, konsultacja w poradni antynikotynowej. Kontrola u mnie za trzy miesiące z aktualnym holterem ciśnieniowym. Proszę o dalszą opiekę POZ między wizytami.";
-
-    let example_output = "PORADNIA KARDIOLOGICZNA
-[Miejscowość], [data]
-
-Sz. P. dr n. med. Nowak
-Praktyka Lekarza Rodzinnego
-
-Dot. pacjenta: [imię i nazwisko], PESEL: [___]
-
-Szanowna Pani Doktor,
-
-Dziękuję za skierowanie pacjenta na konsultację kardiologiczną.
-
-58-letni pacjent skierowany z powodu nadciśnienia tętniczego opornego na leczenie dwulekowe (amlodypina 5 mg + ramipril 10 mg). W domowych pomiarach średnie ciśnienie 155/95 mmHg. Palacz (ok. 20 paczkolat), BMI 31 kg/m².
-
-W badaniu przedmiotowym bez cech niewydolności krążenia.
-ECHO: przerost lewej komory, EF 60%, zastawki bez istotnych wad.
-Holter RR: potwierdzone nadciśnienie z brakiem spadku nocnego (non-dipper).
-Laboratoryjnie: K 4,2 mmol/l, kreatynina 0,85 mg/dl – w normie.
-
-ROZPOZNANIE
-Nadciśnienie tętnicze 3. stopnia z przerostem lewej komory.
-
-PROPONOWANE POSTĘPOWANIE
-1. Zmiana ramiprilu 10 mg na telmisartan 80 mg 1×/d (lepsze pokrycie dobowe u non-dippera).
-2. Dołączenie indapamidu 2,5 mg 1×/d rano.
-3. Bezwzględne zaprzestanie palenia – sugeruję skierowanie do poradni antynikotynowej.
-4. Kontynuacja amlodypiny 5 mg 1×/d.
-
-KONTROLA
-W Poradni Kardiologicznej za 3 miesiące, z aktualnym 24-godzinnym pomiarem ciśnienia.
-
-Uprzejmie proszę o dalszą opiekę POZ oraz monitorowanie tolerancji terapii między wizytami specjalistycznymi.
-
-Z wyrazami szacunku,
-dr n. med. [imię i nazwisko]
-specjalista kardiolog";
-
-    builtin(
-        "builtin-consultation",
-        "List konsultacyjny",
-        "List specjalisty do lekarza kierującego (POZ / inny specjalista)",
-        content,
-        example_input,
-        example_output,
-    )
-}
-
-fn surgery_protocol() -> Template {
-    let content = "Przekształć dyktowany opis zabiegu w oficjalny protokół operacyjny zgodny z polskimi standardami dokumentacji chirurgicznej. Rozpoznania przed- i pooperacyjne podawaj z kodem ICD-10, nazwę procedury z kodem ICD-9. PRZEBIEG ZABIEGU formatuj narracyjnie (nie bullet points), z wyraźnym podziałem na etapy. ZNALEZISKA ŚRÓDOPERACYJNE i ZALECENIA POOPERACYJNE — punktowo. Jeśli lekarz nie wspomniał o powikłaniach, materiale, stracie krwi — wpisz wyraźnie „brak\" / „nie pobierano\" / „minimalna\".
-
-Struktura wyjściowa:
-
-[Dane administracyjne — auto]
-  Data, czas rozpoczęcia/zakończenia, zespół operacyjny, znieczulenie
-
-ROZPOZNANIE PRZEDOPERACYJNE [ICD-10]
-ROZPOZNANIE POOPERACYJNE [ICD-10]
-NAZWA PROCEDURY [ICD-9]
-
-ZNIECZULENIE
-
-PRZEBIEG ZABIEGU (narracyjnie)
-  - Ułożenie pacjenta, dostępy
-  - Kolejne kroki zabiegu
-  - Znaleziska śródoperacyjne
-  - Zamknięcie
-
-ZNALEZISKA ŚRÓDOPERACYJNE (punktowo)
-MATERIAŁ DO BADAŃ (hist-pat, posiew)
-POWIKŁANIA
-STRATA KRWI
-STAN PO ZABIEGU
-ZALECENIA POOPERACYJNE (numerowane)";
-
-    let example_input = "Artroskopia kolana prawego u pacjenta trzydziestodwuletniego z podejrzeniem uszkodzenia łąkotki przyśrodkowej po urazie skrętnym. Znieczulenie podpajęczynówkowe, opaska uciskowa na udzie. Ułożenie na plecach z kolanem zgiętym pod kątem dziewięćdziesiąt stopni. Dostęp standardowy przednio-boczny i przednio-przyśrodkowy. Po wprowadzeniu artroskopu wizualizacja zachyłka nadrzepkowego - bez zmian. Staw rzepkowo-udowy, chrząstka rzepki drugi stopień uszkodzenia według Outerbridge'a, tylko niewielkie rozwłóknienia. Przedział przyśrodkowy - rozdarcie rogu tylnego łąkotki przyśrodkowej typu koszykowego, łąkotka niestabilna. Wykonałem częściową meniscektomię przyśrodkową, usunięto fragment oderwany, brzeg wygładzono. Przedział boczny łąkotka zachowana. Więzadła krzyżowe ciągłe, stabilne test Lachmana. Płukanie stawu, usunięcie narzędzi, szwy pojedyncze na skórę, opatrunek jałowy z kompresją. Strata krwi minimalna. Bez powikłań. Pacjent wybudzony, stan dobry. Po zabiegu chłodzenie, elewacja, obciążanie z pełnym podparciem od razu, rehabilitacja od drugiej doby, kontrola za dziesięć dni, usunięcie szwów.";
-
-    let example_output = "PROTOKÓŁ ZABIEGU OPERACYJNEGO
-
-ROZPOZNANIE PRZEDOPERACYJNE
-Podejrzenie uszkodzenia łąkotki przyśrodkowej kolana prawego po urazie skrętnym. [ICD-10: S83.2]
-
-ROZPOZNANIE POOPERACYJNE
-Rozdarcie typu koszykowego rogu tylnego łąkotki przyśrodkowej kolana prawego. Chondromalacja rzepki II° (Outerbridge).
-
-NAZWA PROCEDURY
-Artroskopia kolana prawego z częściową meniscektomią przyśrodkową [ICD-9: 80.26]
-
-ZNIECZULENIE
-Podpajęczynówkowe. Opaska uciskowa na udzie.
-
-PRZEBIEG ZABIEGU
-Pacjent w ułożeniu na plecach, kolano prawe zgięte pod kątem 90°. Po przygotowaniu pola operacyjnego wykonano standardowe dostępy przednio-boczny i przednio-przyśrodkowy.
-
-Po wprowadzeniu artroskopu uwidoczniono zachyłek nadrzepkowy bez zmian patologicznych. W stawie rzepkowo-udowym stwierdzono chondromalację rzepki II° wg Outerbridge'a (niewielkie rozwłóknienia chrząstki). W przedziale przyśrodkowym uwidoczniono rozdarcie rogu tylnego łąkotki przyśrodkowej typu koszykowego z niestabilną łąkotką. Wykonano częściową meniscektomię przyśrodkową – usunięto fragment oderwany, brzeg pozostałej części łąkotki wygładzono. Przedział boczny oraz więzadła krzyżowe (test Lachmana ujemny śródoperacyjnie) bez zmian.
-
-Wykonano obfite płukanie stawu. Po usunięciu narzędzi rany zamknięto szwami pojedynczymi na skórę. Opatrunek jałowy z kompresją.
-
-ZNALEZISKA ŚRÓDOPERACYJNE
-- Chondromalacja rzepki II° wg Outerbridge'a
-- Rozdarcie rogu tylnego łąkotki przyśrodkowej typu koszykowego
-- Łąkotka boczna oraz więzadła krzyżowe bez zmian
-
-MATERIAŁ DO BADAŃ
-Nie pobierano.
-
-POWIKŁANIA
-Brak.
-
-STRATA KRWI
-Minimalna.
-
-STAN PO ZABIEGU
-Pacjent wybudzony, stan ogólny dobry, parametry stabilne.
-
-ZALECENIA POOPERACYJNE
-1. Chłodzenie kolana (3×/d po 20 min) przez 48 h, elewacja kończyny.
-2. Pełne obciążanie kończyny operowanej od razu, z asekuracją kul przez 2-3 dni.
-3. Rehabilitacja: izometria mięśnia czworogłowego od 2. doby; skierowanie do fizjoterapeuty.
-4. Kontrola w Poradni Ortopedycznej za 10 dni – usunięcie szwów.
-5. Profilaktyka przeciwzakrzepowa – nie wymagana.";
-
-    builtin(
-        "builtin-surgery",
-        "Protokół zabiegu",
-        "Protokół operacyjny: rozpoznania, przebieg, znaleziska, zalecenia",
-        content,
-        example_input,
-        example_output,
+        example_filled,
     )
 }
