@@ -1,3 +1,4 @@
+use crate::ast::{FilledTemplate, TemplateAst};
 use crate::builtin_templates;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -7,20 +8,20 @@ pub struct Template {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub ast: TemplateAst,
     #[serde(default)]
-    pub content: String,
     pub example_input: Option<String>,
-    pub example_output: Option<String>,
+    #[serde(default)]
+    pub example_filled: Option<FilledTemplate>,
     pub is_builtin: bool,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default = "default_ast_version")]
+    pub ast_version: u32,
+}
 
-    // Legacy fields kept for one-time migration from the pre-`content` format.
-    // Present in on-disk JSON written by older builds; merged into `content` on load.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>,
+fn default_ast_version() -> u32 {
+    1
 }
 
 pub struct TemplatesStore {
@@ -31,52 +32,33 @@ pub struct TemplatesStore {
 impl TemplatesStore {
     pub fn new(data_dir: &std::path::Path) -> Self {
         let file_path = data_dir.join("templates.json");
-        let mut store = if file_path.exists() {
-            let templates: Vec<Template> = std::fs::read_to_string(&file_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-            Self {
-                templates,
-                file_path,
+
+        // Load + detect legacy (pre-AST) entries. If any entry lacks the `ast` field,
+        // we wipe user templates (backward compat abandoned by design); built-ins are
+        // always re-seeded from code anyway.
+        let templates: Vec<Template> = if file_path.exists() {
+            match std::fs::read_to_string(&file_path) {
+                Ok(s) => {
+                    let legacy_marker = is_legacy_json(&s);
+                    if legacy_marker {
+                        log::info!("Legacy templates.json detected — wiping (AST migration)");
+                        Vec::new()
+                    } else {
+                        serde_json::from_str::<Vec<Template>>(&s).unwrap_or_default()
+                    }
+                }
+                Err(_) => Vec::new(),
             }
         } else {
-            Self {
-                templates: Vec::new(),
-                file_path,
-            }
+            Vec::new()
         };
-        store.migrate_legacy_fields();
+
+        let mut store = Self {
+            templates,
+            file_path,
+        };
         store.refresh_builtins();
         store
-    }
-
-    /// For entries written by older builds (`schema` + `system_prompt`) without `content`,
-    /// merge the two legacy fields into `content` and drop them.
-    fn migrate_legacy_fields(&mut self) {
-        let mut changed = false;
-        for t in self.templates.iter_mut() {
-            let has_legacy = t.schema.is_some() || t.system_prompt.is_some();
-            if t.content.is_empty() && has_legacy {
-                let schema = t.schema.take().unwrap_or_default();
-                let sys = t.system_prompt.take().unwrap_or_default();
-                t.content = match (schema.trim().is_empty(), sys.trim().is_empty()) {
-                    (true, true) => String::new(),
-                    (false, true) => schema,
-                    (true, false) => sys,
-                    (false, false) => format!("{}\n\n{}", sys.trim(), schema.trim()),
-                };
-                changed = true;
-            } else if has_legacy {
-                // content already present — just drop the legacy fields
-                t.schema = None;
-                t.system_prompt = None;
-                changed = true;
-            }
-        }
-        if changed {
-            self.save();
-        }
     }
 
     /// Always re-seed built-ins from code so prompt improvements in new releases
@@ -100,11 +82,10 @@ impl TemplatesStore {
     pub fn add(&mut self, mut template: Template) -> Template {
         template.id = uuid::Uuid::new_v4().to_string();
         template.is_builtin = false;
-        template.schema = None;
-        template.system_prompt = None;
         let now = crate::notes::chrono_now();
         template.created_at = now.clone();
         template.updated_at = now;
+        template.ast_version = 1;
         self.templates.push(template.clone());
         self.save();
         template
@@ -122,9 +103,9 @@ impl TemplatesStore {
         let existing = &mut self.templates[idx];
         existing.name = patch.name;
         existing.description = patch.description;
-        existing.content = patch.content;
+        existing.ast = patch.ast;
         existing.example_input = patch.example_input;
-        existing.example_output = patch.example_output;
+        existing.example_filled = patch.example_filled;
         existing.updated_at = crate::notes::chrono_now();
         let result = existing.clone();
         self.save();
@@ -154,4 +135,18 @@ impl TemplatesStore {
             std::fs::write(&self.file_path, json).ok();
         }
     }
+}
+
+/// Detect pre-AST templates (had `content: String` / `schema` / `system_prompt`
+/// instead of `ast` object). Cheap structural check on raw JSON.
+fn is_legacy_json(s: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(s) else {
+        return false;
+    };
+    let Some(arr) = value.as_array() else {
+        return false;
+    };
+    arr.iter().any(|entry| {
+        entry.as_object().map(|obj| !obj.contains_key("ast")).unwrap_or(false)
+    })
 }

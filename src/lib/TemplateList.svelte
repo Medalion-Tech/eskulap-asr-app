@@ -25,11 +25,16 @@
       is_builtin: false,
       created_at: "",
       updated_at: "",
+      ast_version: 1,
     };
     const created = await invoke<Template>("add_template", { template: copy });
     $templates = [...$templates, created];
     editing = created;
     editorOpen = true;
+  }
+
+  function slotCount(t: Template): number {
+    return Object.keys(t.ast?.slots ?? {}).length;
   }
 
   async function remove(t: Template) {
@@ -97,7 +102,7 @@
             {#if t.description}
               <div class="desc">{t.description}</div>
             {/if}
-            <pre class="content-preview">{t.content}</pre>
+            <div class="slot-count">{slotCount(t)} slotów</div>
           </li>
         {/each}
       </ul>
@@ -202,18 +207,9 @@
     line-height: 1.5;
   }
 
-  .content-preview {
+  .slot-count {
     margin-top: 8px;
-    padding: 8px 10px;
-    background: var(--bg-subtle);
-    border-radius: var(--radius-sm, 6px);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
     font-size: 11px;
-    line-height: 1.5;
-    color: var(--text-secondary);
-    white-space: pre-wrap;
-    max-height: 140px;
-    overflow: hidden;
-    position: relative;
+    color: var(--text-muted);
   }
 </style>
