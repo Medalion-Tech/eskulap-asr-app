@@ -80,7 +80,7 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
         };
         return ("Metal".to_string(), device);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "accel-vulkan"))]
     {
         let devices = std::panic::catch_unwind(whisper_rs::vulkan::list_devices)
             .unwrap_or_default();
@@ -89,7 +89,11 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
         }
         return ("CPU".to_string(), cpu_model.to_string());
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "linux", not(feature = "accel-vulkan")))]
+    {
+        return ("CPU".to_string(), cpu_model.to_string());
+    }
+    #[cfg(all(target_os = "windows", feature = "accel-cuda"))]
     {
         // Try nvidia-smi to detect CUDA-capable GPU
         if let Ok(out) = std::process::Command::new("nvidia-smi")
@@ -106,6 +110,10 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
                 }
             }
         }
+        return ("CPU".to_string(), cpu_model.to_string());
+    }
+    #[cfg(all(target_os = "windows", not(feature = "accel-cuda")))]
+    {
         return ("CPU".to_string(), cpu_model.to_string());
     }
     #[allow(unreachable_code)]
