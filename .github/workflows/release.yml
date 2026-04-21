@@ -50,6 +50,11 @@ jobs:
             label: windows-x64-cuda
             features: accel-cuda
             args: '--features accel-cuda -c src-tauri/tauri.windows-cuda.conf.json'
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x64-vulkan
+            features: accel-vulkan
+            args: '--features accel-vulkan -c src-tauri/tauri.windows-vulkan.conf.json'
 
     runs-on: ${{ matrix.platform }}
 
@@ -117,6 +122,22 @@ jobs:
           Copy-Item "$cudaBin\cublasLt64_12.dll"  $dest
           Copy-Item "$cudaBin\cudart64_12.dll"    $dest
 
+      - name: Install Vulkan SDK (Windows Vulkan only)
+        if: matrix.label == 'windows-x64-vulkan'
+        shell: pwsh
+        run: |
+          # LunarG Vulkan SDK — required at BUILD time for glslc (shaderc) which
+          # compiles the ggml Vulkan compute shaders into the binary. At RUNTIME
+          # the app only needs vulkan-1.dll, which ships with Windows 10 1809+
+          # and/or the user's GPU driver (Intel / AMD / NVIDIA), so no DLLs need
+          # to be bundled into the installer (unlike CUDA).
+          $ver = "1.3.290.0"
+          $installer = "$env:RUNNER_TEMP\VulkanSDK-Installer.exe"
+          curl.exe -o $installer -L "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
+          & $installer --root "C:\VulkanSDK\$ver" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -159,6 +180,17 @@ jobs:
           # Ensure CUDA architectures are set (support common GeForce cards)
           echo "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90" >> $GITHUB_ENV
 
+      - name: Configure whisper.cpp build (Windows Vulkan)
+        if: matrix.label == 'windows-x64-vulkan'
+        shell: bash
+        run: |
+          # GGML_VULKAN=ON: compile shaders with glslc from the LunarG SDK installed above.
+          # CPU baseline flags mirror the windows-x64-cpu build because some whisper.cpp
+          # ops (e.g. small tensors, reductions) still fall back to CPU; we want that
+          # path portable to any x86-64 CPU from 2013+ (no AVX-512 embedding).
+          # OPENMP=OFF for the same reason as windows-x64-cpu (vcomp140.dll dep).
+          echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF -DGGML_VULKAN=ON" >> $GITHUB_ENV
+
       - name: Fetch Rust dependencies (for patch step)
         shell: bash
         working-directory: src-tauri
@@ -180,10 +212,13 @@ jobs:
 
             ### Windows
 
-            - **Eskulap ASR (CPU)** — `Eskulap.ASR_<ver>_x64-setup.exe` (zalecany dla większości)
-              Działa na każdym komputerze, nie wymaga GPU ani CUDA.
+            - **Eskulap ASR (CPU)** — `Eskulap.ASR_<ver>_x64-setup.exe` (fallback uniwersalny)
+              Działa na każdym komputerze, nie wymaga GPU. Najwolniejszy wariant.
+            - **Eskulap ASR (Vulkan)** — `Eskulap.ASR..Vulkan.._<ver>_x64-setup.exe` (**zalecany dla większości**)
+              Akceleracja GPU działa na NVIDIA (GTX 9xx+), AMD Radeon (RX 5xx+), Intel Arc/Iris Xe.
+              Wymaga tylko aktualnego sterownika GPU (vulkan-1.dll jest w Windows 10 1809+).
             - **Eskulap ASR CUDA** — `Eskulap.ASR..CUDA.._<ver>_x64-setup.exe`
-              Szybsze streszczenia AI na kartach NVIDIA (GTX 10xx i nowsze).
+              Najszybszy wariant dla nowszych NVIDIA (GTX 10xx i nowsze).
               Wymaga aktualnego sterownika NVIDIA. CUDA Runtime jest w instalatorze — nie musisz go instalować osobno.
 
             SmartScreen: "Więcej informacji" → "Uruchom mimo to".
