@@ -138,58 +138,21 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
 
-      # Why this is needed:
-      # ggml-vulkan's CMakeLists.txt uses ExternalProject_Add to build
-      # vulkan-shaders-gen (a host tool). When MSBuild runs the Custom Build rule
-      # that spawns the child cmake, cl.exe is invoked WITHOUT vcvars env vars
-      # (INCLUDE/LIB/LIBPATH/VSINSTALLDIR). This causes two symptoms in the child:
-      #   1) "The C compiler identification is unknown" (cl.exe aborts before
-      #      CMake can identify it).
-      #   2) "error C1083: Cannot open compiler generated file: '': Invalid
-      #      argument" — the signature of cl.exe without vcvars; it tries to
-      #      construct intermediate file names from empty env vars and fails.
-      # ilammy/msvc-dev-cmd runs vcvarsall.bat and exports the MSVC env vars
-      # into $GITHUB_ENV, so every subsequent step (including MSBuild's Custom
-      # Build → child cmake → MSBuild → cl.exe) inherits a functional MSVC env.
-      # NOTE: this must be paired with the CLANG_PATH / LIBCLANG_PATH overrides
-      # below, because vcvars prepends VS's bundled Clang 19 (which ships with
-      # a BROKEN mmintrin.h) to PATH, which would break whisper-rs-sys bindgen.
-      - name: Setup MSVC dev environment (Windows Vulkan)
-        if: matrix.label == 'windows-x64-vulkan'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      # Override bindgen's Clang search to use the runner's system LLVM
-      # (C:\Program Files\LLVM), NOT VS's bundled Clang at
-      # C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm.
-      # VS-bundled Clang 19's mmintrin.h is missing __builtin_ia32_paddsb and
-      # other MMX builtins — parsing whisper.cpp headers via bindgen produces
-      # "use of undeclared identifier '__builtin_ia32_paddsb'" errors.
-      #
-      # Two env vars matter for clang-sys / bindgen:
-      #   - LIBCLANG_PATH: which libclang.dll is loaded (controls parsing).
-      #   - CLANG_PATH:    which clang.exe is used to scrape system include
-      #                    paths via `clang -E -x c -v`. Without this,
-      #                    clang-sys's Clang::find() walks PATH and picks up
-      #                    VS Llvm's clang.exe (which msvc-dev-cmd above put on
-      #                    PATH), then injects VS Llvm's broken mmintrin.h via
-      #                    -isystem flags.
-      # Setting CLANG_PATH short-circuits PATH scanning entirely.
-      - name: Force bindgen to use system LLVM (Windows Vulkan)
-        if: matrix.label == 'windows-x64-vulkan'
-        shell: pwsh
-        run: |
-          $llvm = "C:\Program Files\LLVM"
-          if (-not (Test-Path "$llvm\bin\clang.exe")) {
-            Write-Error "System LLVM not found at $llvm; runner image changed?"
-            exit 1
-          }
-          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=$llvm\bin"
-          Add-Content $env:GITHUB_ENV "CLANG_PATH=$llvm\bin\clang.exe"
-          # Prepend to PATH so any child process that re-probes for clang.exe
-          # also finds system LLVM before VS Llvm.
-          Add-Content $env:GITHUB_PATH "$llvm\bin"
+      # No ilammy/msvc-dev-cmd here, and no CLANG_PATH / LIBCLANG_PATH overrides,
+      # on purpose. Prior theory said cl.exe needed vcvars in the shell env,
+      # but evidence from v0.3.9 showed ilammy set INCLUDE / LIB / VCINSTALLDIR
+      # globally and the child MSBuild still failed with C1083 empty filename.
+      # The real cause is that MSBuild's *nested* TryCompile builds a vcxproj
+      # WITHOUT a PlatformToolset, so VC-targets never compute INCLUDE / LIB
+      # for cl.exe regardless of what's in the ambient env. Adding ilammy also
+      # prepended VS's bundled Clang 19 to PATH, whose mmintrin.h is broken
+      # and broke whisper-rs-sys bindgen — so ilammy caused *two* problems
+      # without solving the one we needed. We fix the actual C1083 at a lower
+      # layer: scripts/patch-vulkan-shaders.sh injects CMAKE_GENERATOR "Ninja"
+      # into ExternalProject_Add(vulkan-shaders-gen ...), so the child uses
+      # Ninja, not VS + MSBuild. Ninja invokes cl.exe directly with the child
+      # process env (inherited from cmake-rs's cc-rs MSVC env), skipping
+      # MSBuild and its PlatformToolset-derived env computation entirely.
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
