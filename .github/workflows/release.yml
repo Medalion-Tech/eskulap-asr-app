@@ -180,6 +180,10 @@ jobs:
           # Ensure CUDA architectures are set (support common GeForce cards)
           echo "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90" >> $GITHUB_ENV
 
+      - name: Setup MSVC dev environment (Windows Vulkan)
+        if: matrix.label == 'windows-x64-vulkan'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure whisper.cpp build (Windows Vulkan)
         if: matrix.label == 'windows-x64-vulkan'
         shell: bash
@@ -189,6 +193,11 @@ jobs:
           # ops (e.g. small tensors, reductions) still fall back to CPU; we want that
           # path portable to any x86-64 CPU from 2013+ (no AVX-512 embedding).
           # OPENMP=OFF for the same reason as windows-x64-cpu (vcomp140.dll dep).
+          #
+          # ilammy/msvc-dev-cmd above puts cl.exe in PATH so that ggml's
+          # vulkan-shaders-gen ExternalProject (which spawns a fresh cmake
+          # configure) can find the MSVC compiler. Without it the sub-project
+          # fails with "No CMAKE_C_COMPILER could be found".
           echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF -DGGML_VULKAN=ON" >> $GITHUB_ENV
 
       - name: Fetch Rust dependencies (for patch step)
