@@ -180,35 +180,23 @@ jobs:
           # Ensure CUDA architectures are set (support common GeForce cards)
           echo "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90" >> $GITHUB_ENV
 
-      - name: Setup MSVC dev environment (Windows Vulkan)
-        if: matrix.label == 'windows-x64-vulkan'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Fix bindgen libclang path (Windows Vulkan)
-        if: matrix.label == 'windows-x64-vulkan'
-        shell: pwsh
-        run: |
-          # ilammy/msvc-dev-cmd adds VS's bundled LLVM (Clang 19) to PATH.
-          # This makes bindgen pick up VS's clang headers which have broken
-          # MMX intrinsic builtins (__builtin_ia32_paddsb etc.) causing
-          # whisper-rs-sys build to fail. Point LIBCLANG_PATH at the system
-          # LLVM installation instead — its headers work correctly with bindgen.
-          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=C:\Program Files\LLVM\bin"
-
       - name: Configure whisper.cpp build (Windows Vulkan)
         if: matrix.label == 'windows-x64-vulkan'
         shell: bash
         run: |
-          # GGML_VULKAN=ON: compile shaders with glslc from the LunarG SDK installed above.
-          # CPU baseline flags mirror the windows-x64-cpu build because some whisper.cpp
-          # ops (e.g. small tensors, reductions) still fall back to CPU; we want that
-          # path portable to any x86-64 CPU from 2013+ (no AVX-512 embedding).
+          # GGML_VULKAN=ON: compile shaders with glslc from the LunarG SDK.
+          # CPU baseline flags mirror windows-x64-cpu (portable, no AVX-512).
           # OPENMP=OFF for the same reason as windows-x64-cpu (vcomp140.dll dep).
           #
-          # ilammy/msvc-dev-cmd above puts cl.exe in PATH so that ggml's
-          # vulkan-shaders-gen ExternalProject (which spawns a fresh cmake
-          # configure) can find the MSVC compiler. Without it the sub-project
-          # fails with "No CMAKE_C_COMPILER could be found".
+          # CMAKE_GENERATOR: ggml builds vulkan-shaders-gen as a CMake
+          # ExternalProject that spawns a FRESH cmake process. That child
+          # cmake doesn't inherit the parent's generator or compiler detection.
+          # Since cmake 3.15 a child cmake reads the CMAKE_GENERATOR env var,
+          # so setting it to "Visual Studio 17 2022" makes the sub-project use
+          # the VS generator which locates cl.exe via the Windows registry —
+          # no need for ilammy/msvc-dev-cmd (which pollutes PATH with VS's
+          # bundled LLVM/Clang 19 and breaks bindgen's header resolution).
+          echo "CMAKE_GENERATOR=Visual Studio 17 2022" >> $GITHUB_ENV
           echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF -DGGML_VULKAN=ON" >> $GITHUB_ENV
 
       - name: Fetch Rust dependencies (for patch step)
