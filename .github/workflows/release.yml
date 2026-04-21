@@ -187,16 +187,6 @@ jobs:
           # GGML_VULKAN=ON: compile shaders with glslc from the LunarG SDK.
           # CPU baseline flags mirror windows-x64-cpu (portable, no AVX-512).
           # OPENMP=OFF for the same reason as windows-x64-cpu (vcomp140.dll dep).
-          #
-          # CMAKE_GENERATOR: ggml builds vulkan-shaders-gen as a CMake
-          # ExternalProject that spawns a FRESH cmake process. That child
-          # cmake doesn't inherit the parent's generator or compiler detection.
-          # Since cmake 3.15 a child cmake reads the CMAKE_GENERATOR env var,
-          # so setting it to "Visual Studio 17 2022" makes the sub-project use
-          # the VS generator which locates cl.exe via the Windows registry —
-          # no need for ilammy/msvc-dev-cmd (which pollutes PATH with VS's
-          # bundled LLVM/Clang 19 and breaks bindgen's header resolution).
-          echo "CMAKE_GENERATOR=Visual Studio 17 2022" >> $GITHUB_ENV
           echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF -DGGML_VULKAN=ON" >> $GITHUB_ENV
 
       - name: Fetch Rust dependencies (for patch step)
@@ -207,6 +197,11 @@ jobs:
       - name: Patch llama.cpp (Gemma 4 E4B FGDN_AR workaround)
         shell: bash
         run: bash scripts/patch-llama-cpp.sh
+
+      - name: Patch ggml-vulkan ExternalProject (forward compiler to sub-cmake)
+        if: contains(matrix.features, 'accel-vulkan')
+        shell: bash
+        run: bash scripts/patch-vulkan-shaders.sh
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
