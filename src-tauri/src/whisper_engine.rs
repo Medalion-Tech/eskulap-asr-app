@@ -1,8 +1,11 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+#[derive(Clone)]
 pub struct WhisperEngine {
-    ctx: WhisperContext,
+    ctx: Arc<WhisperContext>,
 }
 
 unsafe impl Send for WhisperEngine {}
@@ -17,10 +20,19 @@ impl WhisperEngine {
         )
         .map_err(|e| format!("Failed to load whisper model: {}", e))?;
 
-        Ok(Self { ctx })
+        Ok(Self {
+            ctx: Arc::new(ctx),
+        })
     }
 
-    pub fn transcribe(&self, audio_pcm: &[f32]) -> Result<String, String> {
+    pub fn transcribe<F>(
+        &self,
+        audio_pcm: &[f32],
+        mut on_progress: F,
+    ) -> Result<String, String>
+    where
+        F: FnMut(i32) + Send + 'static,
+    {
         let mut state = self
             .ctx
             .create_state()
@@ -33,12 +45,21 @@ impl WhisperEngine {
         params.set_print_realtime(false);
         params.set_print_special(false);
         params.set_print_timestamps(false);
+        params.set_single_segment(true);
+        params.set_n_max_text_ctx(0);
 
-        let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get() as i32)
-            .unwrap_or(4)
-            .min(8);
+        let n_threads = num_cpus::get_physical().min(12).max(1) as i32;
         params.set_n_threads(n_threads);
+
+        let progress = Arc::new(AtomicI32::new(0));
+        let progress2 = Arc::clone(&progress);
+        params.set_progress_callback_safe(move |p: i32| {
+            let old = progress2.load(Ordering::Relaxed);
+            if p > old {
+                progress2.store(p, Ordering::Relaxed);
+                on_progress(p);
+            }
+        });
 
         state
             .full(params, audio_pcm)

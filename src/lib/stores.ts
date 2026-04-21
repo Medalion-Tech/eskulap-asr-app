@@ -37,6 +37,7 @@ export const generationPreview = writable("");
 export const recordingSeconds = writable(0);
 export const downloadProgress = writable(0);
 export const downloadStage = writable<string>("");
+export const transcriptionProgress = writable(0);
 export const statusMessage = writable("");
 
 export const templates = writable<Template[]>([]);

@@ -141,6 +141,17 @@ jobs:
         shell: bash
         run: echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.4-a" >> $GITHUB_ENV
 
+      - name: Configure whisper.cpp build (Windows CPU)
+        if: matrix.label == 'windows-x64-cpu'
+        shell: bash
+        run: |
+          echo "GGML_AVX=ON" >> $GITHUB_ENV
+          echo "GGML_AVX2=ON" >> $GITHUB_ENV
+          echo "GGML_FMA=ON" >> $GITHUB_ENV
+          echo "GGML_F16C=ON" >> $GITHUB_ENV
+          echo "GGML_LTO=ON" >> $GITHUB_ENV
+          echo "CMAKE_CXX_FLAGS=/arch:AVX2" >> $GITHUB_ENV
+
       - name: Configure whisper.cpp build (Windows CUDA)
         if: matrix.label == 'windows-x64-cuda'
         shell: bash

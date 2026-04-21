@@ -52,10 +52,7 @@ pub fn get_accelerator_info() -> AcceleratorInfo {
         "unknown".to_string()
     };
 
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
-        .min(8);
+    let threads = num_cpus::get_physical().min(12).max(1) as i32;
 
     let cpu_model = detect_cpu_model();
     let (backend, device) = detect_backend(&cpu_model);
@@ -252,13 +249,24 @@ pub fn get_audio_levels(
 }
 
 #[tauri::command]
-pub fn transcribe(
+pub async fn transcribe(
     whisper: tauri::State<'_, WhisperState>,
     audio: Vec<f32>,
+    on_progress: Channel<i32>,
 ) -> Result<String, String> {
-    let guard = whisper.0.lock().map_err(|e| e.to_string())?;
-    let engine = guard.as_ref().ok_or("Model not loaded")?;
-    let text = engine.transcribe(&audio)?;
+    let engine = {
+        let guard = whisper.0.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or("Model not loaded")?.clone()
+    };
+
+    let text = tokio::task::spawn_blocking(move || {
+        engine.transcribe(&audio, move |p: i32| {
+            let _ = on_progress.send(p);
+        })
+    })
+    .await
+    .map_err(|e| format!("Transcription task failed: {:?}", e))??;
+
     log::info!("Transcribed: {} chars", text.len());
     Ok(text)
 }

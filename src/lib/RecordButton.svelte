@@ -6,6 +6,7 @@
     isGenerating,
     generationPreview,
     recordingSeconds,
+    transcriptionProgress,
     notes,
     statusMessage,
     selectedTemplateId,
@@ -56,9 +57,16 @@
 
     try {
       const audio: number[] = await invoke("stop_recording");
-      const raw: string = await invoke("transcribe", { audio });
+
+      const onProgress = new Channel<number>();
+      onProgress.onmessage = (p: number) => {
+        $transcriptionProgress = p;
+      };
+
+      const raw: string = await invoke("transcribe", { audio, onProgress });
       const rawTrim = raw.trim();
       $isTranscribing = false;
+      $transcriptionProgress = 0;
 
       if (!rawTrim) {
         $statusMessage = "";
@@ -118,6 +126,7 @@
       $isTranscribing = false;
       $isGenerating = false;
       $generationPreview = "";
+      $transcriptionProgress = 0;
     }
   }
 </script>
@@ -148,13 +157,19 @@
       {#if $isGenerating}
         <span class="label-dim">Formatowanie…</span>
       {:else if $isTranscribing}
-        <span class="label-dim">Transkrypcja…</span>
+        <span class="label-dim">Transkrypcja… {$transcriptionProgress}%</span>
       {:else if $isRecording}
         <span class="time">{formatTime($recordingSeconds)}</span>
       {:else}
         <span class="label-dim">Naciśnij, aby nagrać</span>
       {/if}
     </div>
+
+    {#if $isTranscribing}
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: {$transcriptionProgress}%"></div>
+      </div>
+    {/if}
   </div>
 
   {#if $isGenerating && $generationPreview}
@@ -274,6 +289,23 @@
 
   .label-dim {
     color: var(--text-muted);
+  }
+
+  .progress-bar {
+    width: 100%;
+    max-width: 200px;
+    height: 4px;
+    background: var(--gray-4);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.2s ease-out;
   }
 
   .time {
