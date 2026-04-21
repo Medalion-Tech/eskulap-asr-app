@@ -16,7 +16,7 @@ default = []
 accel-metal  = ["whisper-rs/metal",  "llama-cpp-4/metal"]
 accel-vulkan = ["whisper-rs/vulkan", "llama-cpp-4/vulkan"]
 accel-cuda   = ["whisper-rs/cuda",   "llama-cpp-4/cuda"]
-accel-cpu    = []
+accel-cpu    = ["whisper-rs/openmp"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -37,5 +37,14 @@ uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 sha2 = "0.10"
 hex = "0.4"
+# whisper-rs PRZED llama-cpp-4 — first-definition-wins dla symboli ggml.
+# whisper-rs musi wygrać kolizję, żeby zapewnić poprawny backend ggml (z AVX2).
 whisper-rs = { version = "0.16" }
 llama-cpp-4 = { version = "0.2.46", default-features = false }
+
+[profile.release]
+lto           = "fat"   # link-time optimisation across crates (whole-program)
+codegen-units = 1       # single CGU → better inlining; pairs with fat LTO
+opt-level     = 3
+strip         = "symbols"
+# Note: fat LTO adds ~3–10 min to CI. Switch to lto = "thin" if it becomes a bottleneck.

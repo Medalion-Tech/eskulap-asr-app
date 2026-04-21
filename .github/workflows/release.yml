@@ -141,6 +141,15 @@ jobs:
         shell: bash
         run: echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.4-a" >> $GITHUB_ENV
 
+      - name: Configure whisper.cpp build (Windows CPU)
+        if: matrix.label == 'windows-x64-cpu'
+        shell: bash
+        run: |
+          # AVX2+FMA+F16C: baseline for every x86-64 CPU since 2013 (Haswell / Piledriver).
+          # GGML_NATIVE=ON on a GH runner may embed AVX-512 → SIGILL on user machines.
+          # GGML_OPENMP=ON matches the "whisper-rs/openmp" feature flag in Cargo.toml.
+          echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=ON" >> $GITHUB_ENV
+
       - name: Configure whisper.cpp build (Windows CUDA)
         if: matrix.label == 'windows-x64-cuda'
         shell: bash

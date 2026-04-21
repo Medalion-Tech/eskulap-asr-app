@@ -21,7 +21,7 @@ pub struct AcceleratorInfo {
     pub build_variant: String,
 }
 
-const BUILD_VARIANT: &str = if cfg!(feature = "accel-cuda") {
+pub const BUILD_VARIANT: &str = if cfg!(feature = "accel-cuda") {
     "cuda"
 } else if cfg!(feature = "accel-metal") {
     "metal"
@@ -51,10 +51,7 @@ pub fn get_accelerator_info() -> AcceleratorInfo {
         "unknown".to_string()
     };
 
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
-        .min(8);
+    let threads = crate::whisper_engine::default_threads();
 
     let cpu_model = detect_cpu_model();
     let (backend, device) = detect_backend(&cpu_model);
@@ -163,7 +160,7 @@ fn detect_cpu_model() -> String {
     String::new()
 }
 
-pub struct WhisperState(pub Mutex<Option<WhisperEngine>>);
+pub struct WhisperState(pub Arc<Mutex<Option<WhisperEngine>>>);
 pub struct RecorderState(pub Mutex<Option<AudioRecorder>>);
 pub struct NotesState(pub Mutex<NotesStore>);
 pub struct AudioLevelState(pub LevelHistory);
@@ -249,16 +246,48 @@ pub fn get_audio_levels(
     }
 }
 
+/// Transcribe a full audio buffer with a progress callback (0–100 %).
+/// The UI can display a progress ring while whisper.cpp processes the file.
 #[tauri::command]
-pub fn transcribe(
+pub async fn transcribe(
     whisper: tauri::State<'_, WhisperState>,
     audio: Vec<f32>,
+    on_progress: Channel<u32>,
 ) -> Result<String, String> {
-    let guard = whisper.0.lock().map_err(|e| e.to_string())?;
-    let engine = guard.as_ref().ok_or("Model not loaded")?;
-    let text = engine.transcribe(&audio)?;
+    let engine_arc = whisper.0.clone();
+    let text = tokio::task::spawn_blocking(move || {
+        let guard = engine_arc.lock().map_err(|e| e.to_string())?;
+        let engine = guard.as_ref().ok_or("Model not loaded")?;
+        engine.transcribe(&audio, move |pct| {
+            let _ = on_progress.send(pct as u32);
+        })
+    })
+    .await
+    .map_err(|e| format!("Transcribe task failed: {}", e))??;
     log::info!("Transcribed: {} chars", text.len());
     Ok(text)
+}
+
+/// Transcribe audio in 30-second chunks, streaming each segment's text via `on_segment`.
+/// Returns the full assembled transcription when done.
+/// For audio ≤ 30 s this is equivalent to a single `transcribe` call.
+#[tauri::command]
+pub async fn transcribe_streaming(
+    whisper: tauri::State<'_, WhisperState>,
+    audio: Vec<f32>,
+    on_segment: Channel<String>,
+) -> Result<String, String> {
+    let engine_arc = whisper.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let guard = engine_arc.lock().map_err(|e| e.to_string())?;
+        let engine = guard.as_ref().ok_or("Model not loaded")?;
+        // 30 s chunks with 2 s overlap
+        engine.transcribe_chunked(&audio, 480_000, 32_000, |seg| {
+            let _ = on_segment.send(seg);
+        })
+    })
+    .await
+    .map_err(|e| format!("Transcribe task failed: {}", e))?
 }
 
 #[tauri::command]

@@ -8,6 +8,15 @@ pub struct WhisperEngine {
 unsafe impl Send for WhisperEngine {}
 unsafe impl Sync for WhisperEngine {}
 
+/// Returns the number of threads to use for transcription.
+/// Uses all available parallelism without an artificial cap —
+/// the old `.min(8)` was leaving ~50% of CPU idle on 12/16-core machines.
+pub fn default_threads() -> i32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(4)
+}
+
 impl WhisperEngine {
     pub fn new(model_path: &Path) -> Result<Self, String> {
         let params = WhisperContextParameters::default();
@@ -17,10 +26,23 @@ impl WhisperEngine {
         )
         .map_err(|e| format!("Failed to load whisper model: {}", e))?;
 
+        log::info!(
+            "WhisperEngine: loaded model, threads={}, accel_cpu={}, variant={}",
+            default_threads(),
+            cfg!(feature = "accel-cpu"),
+            crate::commands::BUILD_VARIANT,
+        );
+
         Ok(Self { ctx })
     }
 
-    pub fn transcribe(&self, audio_pcm: &[f32]) -> Result<String, String> {
+    /// Transcribe audio PCM (16 kHz, mono, f32) with an optional progress callback (0–100).
+    /// Pass `|_| {}` as `on_progress` if you don't need progress updates.
+    pub fn transcribe(
+        &self,
+        audio_pcm: &[f32],
+        on_progress: impl Fn(i32) + Send + 'static,
+    ) -> Result<String, String> {
         let mut state = self
             .ctx
             .create_state()
@@ -34,18 +56,43 @@ impl WhisperEngine {
         params.set_print_special(false);
         params.set_print_timestamps(false);
 
-        let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get() as i32)
-            .unwrap_or(4)
-            .min(8);
+        let n_threads = default_threads();
         params.set_n_threads(n_threads);
+
+        // ── Perf / quality tuning ─────────────────────────────────────────────
+        // Don't carry encoder context from previous calls (each call is independent).
+        params.set_no_context(true);
+        // Suppress blank/silence tokens to avoid stray spaces.
+        params.set_suppress_blank(true);
+        // Temperature = 0 → greedy, deterministic, and disables the temperature-
+        // fallback retry loop that can multiply wall-time on "hard" audio.
+        // Risk: no fallback on garbled audio; acceptable for clean medical dictation.
+        params.set_temperature(0.0);
+        // Turbo defaults n_max_text_ctx to 16 384; short dictations need ≤ 64.
+        params.set_n_max_text_ctx(64);
+        // ─────────────────────────────────────────────────────────────────────
+
+        params.set_progress_callback_safe(on_progress);
+
+        let audio_seconds = audio_pcm.len() as f64 / 16_000.0;
+        let t0 = std::time::Instant::now();
 
         state
             .full(params, audio_pcm)
             .map_err(|e| format!("Transcription failed: {}", e))?;
 
-        let num_segments = state.full_n_segments();
+        let elapsed = t0.elapsed();
+        let ratio = audio_seconds / elapsed.as_secs_f64();
+        log::info!(
+            "whisper: audio={:.2}s wall={:.2}s ratio={:.2}x threads={} segments={}",
+            audio_seconds,
+            elapsed.as_secs_f64(),
+            ratio,
+            n_threads,
+            state.full_n_segments(),
+        );
 
+        let num_segments = state.full_n_segments();
         let mut text = String::new();
         for i in 0..num_segments {
             if let Some(segment) = state.get_segment(i) {
@@ -63,5 +110,45 @@ impl WhisperEngine {
         }
 
         Ok(text)
+    }
+
+    /// Transcribe long audio in `chunk_samples`-sized windows with `overlap_samples` overlap.
+    ///
+    /// Typical values: chunk = 480 000 (30 s @ 16 kHz), overlap = 32 000 (2 s).
+    ///
+    /// `on_segment` is called with each completed chunk's text as it becomes available,
+    /// enabling streaming display in the UI.
+    pub fn transcribe_chunked(
+        &self,
+        audio_pcm: &[f32],
+        chunk_samples: usize,
+        overlap_samples: usize,
+        on_segment: impl Fn(String),
+    ) -> Result<String, String> {
+        let mut full_text = String::new();
+        let mut start = 0usize;
+
+        loop {
+            let end = (start + chunk_samples).min(audio_pcm.len());
+            let chunk = &audio_pcm[start..end];
+
+            let segment_text = self.transcribe(chunk, |_| {})?;
+            let trimmed = segment_text.trim().to_string();
+
+            if !trimmed.is_empty() {
+                if !full_text.is_empty() {
+                    full_text.push(' ');
+                }
+                full_text.push_str(&trimmed);
+                on_segment(trimmed);
+            }
+
+            if end >= audio_pcm.len() {
+                break;
+            }
+            start = end.saturating_sub(overlap_samples);
+        }
+
+        Ok(full_text)
     }
 }
