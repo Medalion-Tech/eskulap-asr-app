@@ -109,7 +109,20 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
         }
         return ("CPU".to_string(), cpu_model.to_string());
     }
-    #[cfg(all(target_os = "windows", not(feature = "accel-cuda")))]
+    #[cfg(all(target_os = "windows", feature = "accel-vulkan"))]
+    {
+        // Enumerate Vulkan devices via whisper-rs's ggml-vulkan bindings.
+        // Wrapped in catch_unwind because list_devices() calls into C++ and
+        // a missing vulkan-1.dll / incompatible driver would otherwise crash
+        // the process instead of letting us fall back to CPU with a clean label.
+        let devices = std::panic::catch_unwind(whisper_rs::vulkan::list_devices)
+            .unwrap_or_default();
+        if let Some(first) = devices.into_iter().next() {
+            return ("Vulkan".to_string(), first.name);
+        }
+        return ("CPU".to_string(), cpu_model.to_string());
+    }
+    #[cfg(all(target_os = "windows", not(any(feature = "accel-cuda", feature = "accel-vulkan"))))]
     {
         return ("CPU".to_string(), cpu_model.to_string());
     }

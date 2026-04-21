@@ -1,6 +1,6 @@
 [package]
 name = "eskulap-asr"
-version = "0.3.11"
+version = "0.3.12"
 description = "Desktop wrapper for Eskulap ASR medical speech recognition"
 authors = ["Lion AI"]
 license = "Apache-2.0"
@@ -42,6 +42,9 @@ uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 sha2 = "0.10"
 hex = "0.4"
+# Local time formatting for note timestamps. default-features = false drops
+# the unused `wasmbind`/`unstable-locales` deps; `clock` keeps Local::now().
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # whisper-rs PRZED llama-cpp-4 — first-definition-wins dla symboli ggml.
 # whisper-rs musi wygrać kolizję, żeby zapewnić poprawny backend ggml (z AVX2).
 whisper-rs = { version = "0.16" }

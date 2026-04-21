@@ -124,51 +124,12 @@ impl NotesStore {
     }
 }
 
+/// Current wall-clock time formatted as `YYYY-MM-DD HH:MM:SS` in the user's
+/// **local** timezone. The frontend splits on the space and displays only the
+/// HH:MM portion (see `NotesList.svelte::formatTime`), so the caller must
+/// hand back a string that's already in local time — otherwise the UI shows
+/// UTC, which visibly disagrees with the system clock (reported on a Polish
+/// CEST machine: notes saved at 21:XX local displayed as 19:XX).
 pub fn chrono_now() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    // Simple ISO-ish timestamp without chrono dependency
-    let secs = now.as_secs();
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    // Approximate date calculation (good enough for display)
-    let mut y = 1970i64;
-    let mut remaining_days = days as i64;
-    loop {
-        let days_in_year = if is_leap(y) { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        y += 1;
-    }
-    let months_days = if is_leap(y) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut m = 1;
-    for &md in &months_days {
-        if remaining_days < md {
-            break;
-        }
-        remaining_days -= md;
-        m += 1;
-    }
-    let d = remaining_days + 1;
-
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        y, m, d, hours, minutes, seconds
-    )
-}
-
-fn is_leap(y: i64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
