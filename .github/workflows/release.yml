@@ -184,6 +184,17 @@ jobs:
         if: matrix.label == 'windows-x64-vulkan'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Fix bindgen libclang path (Windows Vulkan)
+        if: matrix.label == 'windows-x64-vulkan'
+        shell: pwsh
+        run: |
+          # ilammy/msvc-dev-cmd adds VS's bundled LLVM (Clang 19) to PATH.
+          # This makes bindgen pick up VS's clang headers which have broken
+          # MMX intrinsic builtins (__builtin_ia32_paddsb etc.) causing
+          # whisper-rs-sys build to fail. Point LIBCLANG_PATH at the system
+          # LLVM installation instead — its headers work correctly with bindgen.
+          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=C:\Program Files\LLVM\bin"
+
       - name: Configure whisper.cpp build (Windows Vulkan)
         if: matrix.label == 'windows-x64-vulkan'
         shell: bash
