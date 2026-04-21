@@ -147,8 +147,10 @@ jobs:
         run: |
           # AVX2+FMA+F16C: baseline for every x86-64 CPU since 2013 (Haswell / Piledriver).
           # GGML_NATIVE=ON on a GH runner may embed AVX-512 → SIGILL on user machines.
-          # GGML_OPENMP=ON matches the "whisper-rs/openmp" feature flag in Cargo.toml.
-          echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=ON" >> $GITHUB_ENV
+          # GGML_OPENMP=OFF: MSVC OpenMP pulls vcomp140.dll from VC++ Redistributable,
+          # which many target machines lack → silent abort (0xC0000135) on first
+          # parallel region. whisper.cpp's internal thread pool is used instead.
+          echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF" >> $GITHUB_ENV
 
       - name: Configure whisper.cpp build (Windows CUDA)
         if: matrix.label == 'windows-x64-cuda'

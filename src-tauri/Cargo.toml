@@ -1,6 +1,6 @@
 [package]
 name = "eskulap-asr"
-version = "0.3.2"
+version = "0.3.3"
 description = "Desktop wrapper for Eskulap ASR medical speech recognition"
 authors = ["Lion AI"]
 license = "Apache-2.0"
@@ -16,7 +16,12 @@ default = []
 accel-metal  = ["whisper-rs/metal",  "llama-cpp-4/metal"]
 accel-vulkan = ["whisper-rs/vulkan", "llama-cpp-4/vulkan"]
 accel-cuda   = ["whisper-rs/cuda",   "llama-cpp-4/cuda"]
-accel-cpu    = ["whisper-rs/openmp"]
+# NOTE: deliberately NOT linking whisper-rs/openmp on Windows — MSVC OpenMP
+# requires vcomp140.dll from VC++ Redistributable, which many clinic PCs lack.
+# Without it whisper.cpp silently aborts on the first #pragma omp parallel
+# region (fault 0xC0000135). We rely on whisper.cpp's internal thread pool
+# instead; ~10–20% perf loss vs. OpenMP, but zero-dependency install.
+accel-cpu    = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
