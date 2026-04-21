@@ -1,6 +1,6 @@
 [package]
 name = "eskulap-asr"
-version = "0.3.10"
+version = "0.3.11"
 description = "Desktop wrapper for Eskulap ASR medical speech recognition"
 authors = ["Lion AI"]
 license = "Apache-2.0"

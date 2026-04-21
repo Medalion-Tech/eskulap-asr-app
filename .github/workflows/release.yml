@@ -138,6 +138,26 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
 
+      # Shorten the cargo target dir for Vulkan builds. Without this, the
+      # default target dir `D:\a\eskulap-asr-app\eskulap-asr-app\src-tauri\target\`
+      # (52 chars) plus the deeply nested vulkan-shaders-gen ExternalProject
+      # subtree (vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles
+      # /CMakeScratch/TryCompile-XXX/CMakeFiles/cmTC_XXX.dir/) pushes the
+      # object-file directory to 256 characters, which:
+      #   - exceeds CMake's CMAKE_OBJECT_PATH_MAX default of 250 chars (emits
+      #     a warning and may produce broken paths internally), and
+      #   - leaves cl.exe too little headroom when writing the .pdb file,
+      #     producing "fatal error C1041: cannot open program database".
+      # Moving to C:\t (5 chars) saves 47 chars and drops the longest path
+      # well under both limits. Only needed for Vulkan because it's the only
+      # backend that adds a deeply nested ExternalProject subtree.
+      - name: Shorten cargo target dir (Windows Vulkan)
+        if: matrix.label == 'windows-x64-vulkan'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "C:\t" -Force | Out-Null
+          Add-Content $env:GITHUB_ENV "CARGO_TARGET_DIR=C:\t"
+
       # No ilammy/msvc-dev-cmd here, and no CLANG_PATH / LIBCLANG_PATH overrides,
       # on purpose. Prior theory said cl.exe needed vcvars in the shell env,
       # but evidence from v0.3.9 showed ilammy set INCLUDE / LIB / VCINSTALLDIR
