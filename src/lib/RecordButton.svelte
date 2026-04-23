@@ -11,6 +11,8 @@
     statusMessage,
     selectedTemplateId,
     templates,
+    transcribeProgress,
+    transcriptionPreview,
     type Note,
   } from "./stores";
   import type { GenerationResult } from "./ast-types";
@@ -58,12 +60,23 @@
     try {
       const audio: number[] = await invoke("stop_recording");
 
-      const onProgress = new Channel<number>();
-      onProgress.onmessage = (p: number) => {
-        $transcriptionProgress = p;
+      // Stream transcription in 30-second chunks so partial text appears
+      // progressively rather than waiting for the whole recording to process.
+      $transcriptionPreview = "";
+      $transcribeProgress = 0;
+      const onSegment = new Channel<string>();
+      onSegment.onmessage = (seg: string) => {
+        $transcriptionPreview = $transcriptionPreview
+          ? $transcriptionPreview + " " + seg
+          : seg;
       };
+      const raw: string = await invoke("transcribe_streaming", {
+        audio,
+        onSegment,
+      });
+      $transcriptionPreview = "";
+      $transcribeProgress = 0;
 
-      const raw: string = await invoke("transcribe", { audio, onProgress });
       const rawTrim = raw.trim();
       $isTranscribing = false;
       $transcriptionProgress = 0;
@@ -145,7 +158,15 @@
       aria-label={$isRecording ? "Zatrzymaj nagrywanie" : "Rozpocznij nagrywanie"}
     >
       {#if $isTranscribing || $isGenerating}
-        <div class="spinner"></div>
+        {#if $transcribeProgress > 0 && $transcribeProgress < 100}
+          <div
+            class="progress-ring"
+            style="--pct: {$transcribeProgress}%"
+            aria-label="Postęp transkrypcji {$transcribeProgress}%"
+          ></div>
+        {:else}
+          <div class="spinner"></div>
+        {/if}
       {:else if $isRecording}
         <span class="stop-shape"></span>
       {:else}
@@ -157,7 +178,11 @@
       {#if $isGenerating}
         <span class="label-dim">Formatowanie…</span>
       {:else if $isTranscribing}
-        <span class="label-dim">Transkrypcja… {$transcriptionProgress}%</span>
+        {#if $transcribeProgress > 0 && $transcribeProgress < 100}
+          <span class="label-dim">Transkrypcja… {$transcribeProgress}%</span>
+        {:else}
+          <span class="label-dim">Transkrypcja…</span>
+        {/if}
       {:else if $isRecording}
         <span class="time">{formatTime($recordingSeconds)}</span>
       {:else}
@@ -171,6 +196,13 @@
       </div>
     {/if}
   </div>
+
+  {#if $isTranscribing && $transcriptionPreview}
+    <div class="preview">
+      <div class="preview-label">Transkrypcja (na bieżąco):</div>
+      <pre class="preview-text">{$transcriptionPreview}</pre>
+    </div>
+  {/if}
 
   {#if $isGenerating && $generationPreview}
     <div class="preview">
@@ -278,6 +310,20 @@
 
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+
+  /* Conic-gradient progress ring — shows whisper.cpp % completion.
+     --pct is set inline from $transcribeProgress. */
+  .progress-ring {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: conic-gradient(
+      var(--accent) var(--pct, 0%),
+      var(--gray-5) var(--pct, 0%)
+    );
+    mask: radial-gradient(farthest-side, transparent 62%, #000 63%);
+    -webkit-mask: radial-gradient(farthest-side, transparent 62%, #000 63%);
   }
 
   .label {

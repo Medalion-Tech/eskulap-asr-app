@@ -15,7 +15,19 @@ Desktop application for Polish medical speech recognition, powered by the [lion-
 Download the latest release from the [Releases](../../releases) page:
 
 - **macOS**: Download the `.dmg` file, open it, drag the app to Applications.
-  - On first launch: right-click the app > "Open" (bypasses Gatekeeper for unsigned apps).
+  - The app is ad-hoc signed (no paid Apple Developer certificate), so
+    Gatekeeper shows *"Eskulap ASR could not be opened — Apple cannot verify..."*
+    on first launch.
+  - **Fix (one command in Terminal):**
+    ```bash
+    sudo xattr -cr "/Applications/Eskulap ASR.app"
+    ```
+    This strips the `com.apple.quarantine` attribute macOS stamps on any file
+    downloaded from the internet. After running it, launch normally from
+    Launchpad / Applications.
+  - On macOS Sequoia (15+) that alone may not suffice — instead open
+    **System Settings → Privacy & Security**, scroll to the bottom, and click
+    **"Open Anyway"** next to the block notice for Eskulap ASR.
 - **Windows**: Download the `.exe` installer and run it.
   - Click "More info" > "Run anyway" if SmartScreen appears.
 

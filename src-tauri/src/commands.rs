@@ -22,7 +22,7 @@ pub struct AcceleratorInfo {
     pub build_variant: String,
 }
 
-const BUILD_VARIANT: &str = if cfg!(feature = "accel-cuda") {
+pub const BUILD_VARIANT: &str = if cfg!(feature = "accel-cuda") {
     "cuda"
 } else if cfg!(feature = "accel-metal") {
     "metal"
@@ -110,7 +110,20 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
         }
         return ("CPU".to_string(), cpu_model.to_string());
     }
-    #[cfg(all(target_os = "windows", not(feature = "accel-cuda")))]
+    #[cfg(all(target_os = "windows", feature = "accel-vulkan"))]
+    {
+        // Enumerate Vulkan devices via whisper-rs's ggml-vulkan bindings.
+        // Wrapped in catch_unwind because list_devices() calls into C++ and
+        // a missing vulkan-1.dll / incompatible driver would otherwise crash
+        // the process instead of letting us fall back to CPU with a clean label.
+        let devices = std::panic::catch_unwind(whisper_rs::vulkan::list_devices)
+            .unwrap_or_default();
+        if let Some(first) = devices.into_iter().next() {
+            return ("Vulkan".to_string(), first.name);
+        }
+        return ("CPU".to_string(), cpu_model.to_string());
+    }
+    #[cfg(all(target_os = "windows", not(any(feature = "accel-cuda", feature = "accel-vulkan"))))]
     {
         return ("CPU".to_string(), cpu_model.to_string());
     }
@@ -161,7 +174,7 @@ fn detect_cpu_model() -> String {
     String::new()
 }
 
-pub struct WhisperState(pub Mutex<Option<WhisperEngine>>);
+pub struct WhisperState(pub Arc<Mutex<Option<WhisperEngine>>>);
 pub struct RecorderState(pub Mutex<Option<AudioRecorder>>);
 pub struct NotesState(pub Mutex<NotesStore>);
 pub struct AudioLevelState(pub LevelHistory);
@@ -248,12 +261,17 @@ pub fn get_audio_levels(
     }
 }
 
+/// Transcribe a full audio buffer with a progress callback (0–100 %).
+/// The UI can display a progress ring while whisper.cpp processes the file.
 #[tauri::command]
 pub async fn transcribe(
     whisper: tauri::State<'_, WhisperState>,
     audio: Vec<f32>,
     on_progress: Channel<i32>,
 ) -> Result<String, String> {
+    // Clone the engine (cheap: it's an Arc<WhisperContext> internally) so we
+    // don't hold the outer Mutex across the `spawn_blocking` transcription,
+    // which would serialize other whisper-touching commands (e.g. status).
     let engine = {
         let guard = whisper.0.lock().map_err(|e| e.to_string())?;
         guard.as_ref().ok_or("Model not loaded")?.clone()
@@ -267,8 +285,31 @@ pub async fn transcribe(
     .await
     .map_err(|e| format!("Transcription task failed: {:?}", e))??;
 
+
     log::info!("Transcribed: {} chars", text.len());
     Ok(text)
+}
+
+/// Transcribe audio in 30-second chunks, streaming each segment's text via `on_segment`.
+/// Returns the full assembled transcription when done.
+/// For audio ≤ 30 s this is equivalent to a single `transcribe` call.
+#[tauri::command]
+pub async fn transcribe_streaming(
+    whisper: tauri::State<'_, WhisperState>,
+    audio: Vec<f32>,
+    on_segment: Channel<String>,
+) -> Result<String, String> {
+    let engine_arc = whisper.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let guard = engine_arc.lock().map_err(|e| e.to_string())?;
+        let engine = guard.as_ref().ok_or("Model not loaded")?;
+        // 30 s chunks with 2 s overlap
+        engine.transcribe_chunked(&audio, 480_000, 32_000, |seg| {
+            let _ = on_segment.send(seg);
+        })
+    })
+    .await
+    .map_err(|e| format!("Transcribe task failed: {}", e))?
 }
 
 #[tauri::command]

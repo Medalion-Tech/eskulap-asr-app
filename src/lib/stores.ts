@@ -40,6 +40,11 @@ export const downloadStage = writable<string>("");
 export const transcriptionProgress = writable(0);
 export const statusMessage = writable("");
 
+/** 0–100 progress from whisper.cpp progress callback (used with `transcribe` command). */
+export const transcribeProgress = writable<number>(0);
+/** Partial transcription text from `transcribe_streaming` segments. */
+export const transcriptionPreview = writable<string>("");
+
 export const templates = writable<Template[]>([]);
 export const selectedTemplateId = writable<string | null>(
   typeof localStorage !== "undefined"

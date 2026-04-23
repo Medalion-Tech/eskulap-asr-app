@@ -41,7 +41,7 @@ pub fn run() {
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&data_dir).ok();
 
-            app.manage(WhisperState(Mutex::new(None)));
+            app.manage(WhisperState(Arc::new(Mutex::new(None))));
             app.manage(RecorderState(Mutex::new(None)));
             app.manage(NotesState(Mutex::new(NotesStore::new(&data_dir))));
             app.manage(AudioLevelState(Arc::new(Mutex::new(VecDeque::with_capacity(
@@ -62,6 +62,7 @@ pub fn run() {
             commands::stop_recording,
             commands::get_audio_levels,
             commands::transcribe,
+            commands::transcribe_streaming,
             commands::get_notes,
             commands::add_note,
             commands::delete_note,

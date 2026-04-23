@@ -50,6 +50,11 @@ jobs:
             label: windows-x64-cuda
             features: accel-cuda
             args: '--features accel-cuda -c src-tauri/tauri.windows-cuda.conf.json'
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x64-vulkan
+            features: accel-vulkan
+            args: '--features accel-vulkan -c src-tauri/tauri.windows-vulkan.conf.json'
 
     runs-on: ${{ matrix.platform }}
 
@@ -117,6 +122,58 @@ jobs:
           Copy-Item "$cudaBin\cublasLt64_12.dll"  $dest
           Copy-Item "$cudaBin\cudart64_12.dll"    $dest
 
+      - name: Install Vulkan SDK (Windows Vulkan only)
+        if: matrix.label == 'windows-x64-vulkan'
+        shell: pwsh
+        run: |
+          # LunarG Vulkan SDK — required at BUILD time for glslc (shaderc) which
+          # compiles the ggml Vulkan compute shaders into the binary. At RUNTIME
+          # the app only needs vulkan-1.dll, which ships with Windows 10 1809+
+          # and/or the user's GPU driver (Intel / AMD / NVIDIA), so no DLLs need
+          # to be bundled into the installer (unlike CUDA).
+          $ver = "1.3.290.0"
+          $installer = "$env:RUNNER_TEMP\VulkanSDK-Installer.exe"
+          curl.exe -o $installer -L "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
+          & $installer --root "C:\VulkanSDK\$ver" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
+
+      # Shorten the cargo target dir for Vulkan builds. Without this, the
+      # default target dir `D:\a\eskulap-asr-app\eskulap-asr-app\src-tauri\target\`
+      # (52 chars) plus the deeply nested vulkan-shaders-gen ExternalProject
+      # subtree (vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles
+      # /CMakeScratch/TryCompile-XXX/CMakeFiles/cmTC_XXX.dir/) pushes the
+      # object-file directory to 256 characters, which:
+      #   - exceeds CMake's CMAKE_OBJECT_PATH_MAX default of 250 chars (emits
+      #     a warning and may produce broken paths internally), and
+      #   - leaves cl.exe too little headroom when writing the .pdb file,
+      #     producing "fatal error C1041: cannot open program database".
+      # Moving to C:\t (5 chars) saves 47 chars and drops the longest path
+      # well under both limits. Only needed for Vulkan because it's the only
+      # backend that adds a deeply nested ExternalProject subtree.
+      - name: Shorten cargo target dir (Windows Vulkan)
+        if: matrix.label == 'windows-x64-vulkan'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "C:\t" -Force | Out-Null
+          Add-Content $env:GITHUB_ENV "CARGO_TARGET_DIR=C:\t"
+
+      # No ilammy/msvc-dev-cmd here, and no CLANG_PATH / LIBCLANG_PATH overrides,
+      # on purpose. Prior theory said cl.exe needed vcvars in the shell env,
+      # but evidence from v0.3.9 showed ilammy set INCLUDE / LIB / VCINSTALLDIR
+      # globally and the child MSBuild still failed with C1083 empty filename.
+      # The real cause is that MSBuild's *nested* TryCompile builds a vcxproj
+      # WITHOUT a PlatformToolset, so VC-targets never compute INCLUDE / LIB
+      # for cl.exe regardless of what's in the ambient env. Adding ilammy also
+      # prepended VS's bundled Clang 19 to PATH, whose mmintrin.h is broken
+      # and broke whisper-rs-sys bindgen — so ilammy caused *two* problems
+      # without solving the one we needed. We fix the actual C1083 at a lower
+      # layer: scripts/patch-vulkan-shaders.sh injects CMAKE_GENERATOR "Ninja"
+      # into ExternalProject_Add(vulkan-shaders-gen ...), so the child uses
+      # Ninja, not VS + MSBuild. Ninja invokes cl.exe directly with the child
+      # process env (inherited from cmake-rs's cc-rs MSVC env), skipping
+      # MSBuild and its PlatformToolset-derived env computation entirely.
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -145,12 +202,12 @@ jobs:
         if: matrix.label == 'windows-x64-cpu'
         shell: bash
         run: |
-          echo "GGML_AVX=ON" >> $GITHUB_ENV
-          echo "GGML_AVX2=ON" >> $GITHUB_ENV
-          echo "GGML_FMA=ON" >> $GITHUB_ENV
-          echo "GGML_F16C=ON" >> $GITHUB_ENV
-          echo "GGML_LTO=ON" >> $GITHUB_ENV
-          echo "CMAKE_CXX_FLAGS=/arch:AVX2" >> $GITHUB_ENV
+          # AVX2+FMA+F16C: baseline for every x86-64 CPU since 2013 (Haswell / Piledriver).
+          # GGML_NATIVE=ON on a GH runner may embed AVX-512 → SIGILL on user machines.
+          # GGML_OPENMP=OFF: MSVC OpenMP pulls vcomp140.dll from VC++ Redistributable,
+          # which many target machines lack → silent abort (0xC0000135) on first
+          # parallel region. whisper.cpp's internal thread pool is used instead.
+          echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF" >> $GITHUB_ENV
 
       - name: Configure whisper.cpp build (Windows CUDA)
         if: matrix.label == 'windows-x64-cuda'
@@ -158,6 +215,15 @@ jobs:
         run: |
           # Ensure CUDA architectures are set (support common GeForce cards)
           echo "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90" >> $GITHUB_ENV
+
+      - name: Configure whisper.cpp build (Windows Vulkan)
+        if: matrix.label == 'windows-x64-vulkan'
+        shell: bash
+        run: |
+          # GGML_VULKAN=ON: compile shaders with glslc from the LunarG SDK.
+          # CPU baseline flags mirror windows-x64-cpu (portable, no AVX-512).
+          # OPENMP=OFF for the same reason as windows-x64-cpu (vcomp140.dll dep).
+          echo "CMAKE_ARGS=-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF -DGGML_VULKAN=ON" >> $GITHUB_ENV
 
       - name: Fetch Rust dependencies (for patch step)
         shell: bash
@@ -167,6 +233,11 @@ jobs:
       - name: Patch llama.cpp (Gemma 4 E4B FGDN_AR workaround)
         shell: bash
         run: bash scripts/patch-llama-cpp.sh
+
+      - name: Patch ggml-vulkan ExternalProject (forward compiler to sub-cmake)
+        if: contains(matrix.features, 'accel-vulkan')
+        shell: bash
+        run: bash scripts/patch-vulkan-shaders.sh
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -180,10 +251,13 @@ jobs:
 
             ### Windows
 
-            - **Eskulap ASR (CPU)** — `Eskulap.ASR_<ver>_x64-setup.exe` (zalecany dla większości)
-              Działa na każdym komputerze, nie wymaga GPU ani CUDA.
+            - **Eskulap ASR (CPU)** — `Eskulap.ASR_<ver>_x64-setup.exe` (fallback uniwersalny)
+              Działa na każdym komputerze, nie wymaga GPU. Najwolniejszy wariant.
+            - **Eskulap ASR (Vulkan)** — `Eskulap.ASR..Vulkan.._<ver>_x64-setup.exe` (**zalecany dla większości**)
+              Akceleracja GPU działa na NVIDIA (GTX 9xx+), AMD Radeon (RX 5xx+), Intel Arc/Iris Xe.
+              Wymaga tylko aktualnego sterownika GPU (vulkan-1.dll jest w Windows 10 1809+).
             - **Eskulap ASR CUDA** — `Eskulap.ASR..CUDA.._<ver>_x64-setup.exe`
-              Szybsze streszczenia AI na kartach NVIDIA (GTX 10xx i nowsze).
+              Najszybszy wariant dla nowszych NVIDIA (GTX 10xx i nowsze).
               Wymaga aktualnego sterownika NVIDIA. CUDA Runtime jest w instalatorze — nie musisz go instalować osobno.
 
             SmartScreen: "Więcej informacji" → "Uruchom mimo to".
@@ -202,14 +276,31 @@ jobs:
             - **Apple Silicon** — `Eskulap.ASR_<ver>_aarch64.dmg`
             - **Intel** — `Eskulap.ASR_<ver>_x64.dmg`
 
-            Aplikacja jest **ad-hoc signed** (bez certyfikatu Apple Developer).
-            Jeśli pojawi się "Eskulap ASR jest uszkodzona" — otwórz Terminal:
+            Aplikacja jest **ad-hoc signed** (bez certyfikatu Apple Developer $99/rok),
+            więc macOS Gatekeeper przy pierwszym uruchomieniu pokaże dialog
+            *"Rzecz »Eskulap ASR« nie została otwarta — Apple nie może zweryfikować..."*.
+
+            **Rozwiązanie (jedna komenda w Terminalu):**
 
             ```bash
-            xattr -cr "/Applications/Eskulap ASR.app"
+            sudo xattr -cr "/Applications/Eskulap ASR.app"
             ```
 
-            Potem prawym przyciskiem → **Otwórz**.
+            To usuwa atrybut `com.apple.quarantine` który macOS dokleja każdemu
+            plikowi pobranemu z internetu. Po tej komendzie uruchamiasz normalnie
+            z Launchpada / Applications.
+
+            **Alternatywa klikana** (dla osób unikających Terminala):
+
+            1. Kliknij **Gotowe** na dialogu
+            2. **Ustawienia systemowe** → **Prywatność i bezpieczeństwo**
+            3. Przewiń na sam dół → sekcja **Bezpieczeństwo**
+            4. Przy linii *"Aplikacja »Eskulap ASR« została zablokowana..."* kliknij **Otwórz mimo to**
+            5. Wpisz hasło → uruchom aplikację jeszcze raz
+
+            Na macOS Sequoia (15+) sam `xattr` może nie wystarczyć — wtedy
+            użyj drogi klikanej. Na wcześniejszych macOS (Sonoma 14, Ventura 13)
+            `xattr` wystarcza.
 
             ---
 
@@ -219,7 +310,7 @@ jobs:
             ## Model
 
             [`lion-ai/eskulap-asr-turbo-beta`](https://huggingface.co/lion-ai/eskulap-asr-turbo-beta) — fine-tuned whisper-large-v3-turbo dla polskiej mowy medycznej (Q8_0 quantization).
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 
