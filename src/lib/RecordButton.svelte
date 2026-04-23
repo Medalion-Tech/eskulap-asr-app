@@ -6,13 +6,16 @@
     isGenerating,
     generationPreview,
     recordingSeconds,
+    transcriptionProgress,
     notes,
     statusMessage,
     selectedTemplateId,
     templates,
     transcribeProgress,
     transcriptionPreview,
+    type Note,
   } from "./stores";
+  import type { GenerationResult } from "./ast-types";
   import Waveform from "./Waveform.svelte";
 
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -76,6 +79,7 @@
 
       const rawTrim = raw.trim();
       $isTranscribing = false;
+      $transcriptionProgress = 0;
 
       if (!rawTrim) {
         $statusMessage = "";
@@ -85,11 +89,7 @@
       const tmplId = $selectedTemplateId;
 
       if (!tmplId) {
-        const note = await invoke<{
-          id: string;
-          timestamp: string;
-          text: string;
-        }>("add_note", { text: rawTrim });
+        const note = await invoke<Note>("add_note", { text: rawTrim });
         $notes = [{ ...note, selected: false }, ...$notes];
         $statusMessage = "";
         return;
@@ -97,11 +97,7 @@
 
       const tmpl = $templates.find((t) => t.id === tmplId);
       if (!tmpl) {
-        const note = await invoke<{
-          id: string;
-          timestamp: string;
-          text: string;
-        }>("add_note", { text: rawTrim });
+        const note = await invoke<Note>("add_note", { text: rawTrim });
         $notes = [{ ...note, selected: false }, ...$notes];
         $statusMessage = "";
         return;
@@ -116,26 +112,25 @@
         $generationPreview += piece;
       };
 
-      const formatted: string = await invoke("generate_from_template", {
+      const result: GenerationResult = await invoke("generate_from_template", {
         templateId: tmplId,
         rawTranscription: rawTrim,
         onToken,
       });
 
-      const note = await invoke<{
-        id: string;
-        timestamp: string;
-        text: string;
-        raw_transcription: string | null;
-        template_id: string | null;
-        template_name: string | null;
-      }>("add_note_with_template", {
-        text: formatted.trim(),
+      const note = await invoke<Note>("add_note_with_template", {
+        text: result.display_text,
         rawTranscription: rawTrim,
         templateId: tmplId,
         templateName: tmpl.name,
+        filled: result.filled,
+        rawLlmOutput: result.raw_output,
       });
       $notes = [{ ...note, selected: false }, ...$notes];
+
+      if (result.parse_quality_low) {
+        $statusMessage = `Uwaga: parser rozpoznał ${result.parsed_ok}/${result.total_slots} slotów. Sprawdź notatkę.`;
+      }
 
       $statusMessage = "";
     } catch (e: any) {
@@ -144,6 +139,7 @@
       $isTranscribing = false;
       $isGenerating = false;
       $generationPreview = "";
+      $transcriptionProgress = 0;
     }
   }
 </script>
@@ -193,6 +189,12 @@
         <span class="label-dim">Naciśnij, aby nagrać</span>
       {/if}
     </div>
+
+    {#if $isTranscribing}
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: {$transcriptionProgress}%"></div>
+      </div>
+    {/if}
   </div>
 
   {#if $isTranscribing && $transcriptionPreview}
@@ -333,6 +335,23 @@
 
   .label-dim {
     color: var(--text-muted);
+  }
+
+  .progress-bar {
+    width: 100%;
+    max-width: 200px;
+    height: 4px;
+    background: var(--gray-4);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.2s ease-out;
   }
 
   .time {

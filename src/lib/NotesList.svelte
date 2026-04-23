@@ -9,10 +9,24 @@
     generationPreview,
   } from "./stores";
   import type { Note } from "./stores";
+  import type { GenerationResult } from "./ast-types";
+  import FilledDocument from "./review/FilledDocument.svelte";
 
   let compiled = $state("");
   let showCompiled = $state(false);
-  let regenerateFor: Note | null = $state(null);
+  let regenerateFor = $state<Note | null>(null);
+  let viewing = $state<Note | null>(null);
+
+  function openNote(note: Note) {
+    console.log("[NotesList] openNote", note.id, "hasFilled=", !!note.filled);
+    viewing = note;
+  }
+
+  const viewingTemplate = $derived(
+    viewing && viewing.template_id
+      ? $templates.find((t) => t.id === viewing!.template_id) ?? null
+      : null,
+  );
 
   const selectedCount = $derived($notes.filter((n) => n.selected).length);
   const allSelected = $derived(
@@ -58,20 +72,27 @@
     };
 
     try {
-      const formatted: string = await invoke("generate_from_template", {
+      const result: GenerationResult = await invoke("generate_from_template", {
         templateId: tmplId,
         rawTranscription: note.raw_transcription,
         onToken,
       });
       const updated = await invoke<Note>("update_note_with_template", {
         id: note.id,
-        text: formatted.trim(),
+        text: result.display_text,
         templateId: tmplId,
         templateName: tmpl.name,
       });
       if (updated) {
         $notes = $notes.map((n) =>
-          n.id === updated.id ? { ...updated, selected: n.selected } : n
+          n.id === updated.id
+            ? {
+                ...updated,
+                filled: result.filled,
+                raw_llm_output: result.raw_output,
+                selected: n.selected,
+              }
+            : n,
         );
       }
       $statusMessage = "Notatka zregenerowana";
@@ -166,7 +187,66 @@
   </section>
 {/if}
 
-{#if showCompiled}
+{#if viewing}
+  <section class="viewer">
+    <header class="viewer-header">
+      <button class="btn btn-ghost" onclick={() => (viewing = null)}>
+        <span class="arrow">←</span> Powrót
+      </button>
+      <div class="viewer-title">
+        <span>{viewing.template_name ?? "Notatka"}</span>
+        <span class="viewer-time">{formatTime(viewing.timestamp)}</span>
+      </div>
+      <div class="viewer-actions">
+        {#if viewing.raw_llm_output}
+          <button
+            class="btn btn-ghost btn-sm"
+            onclick={async () => {
+              if (!viewing) return;
+              try {
+                const updated = await invoke<Note>("reparse_note", { noteId: viewing.id });
+                $notes = $notes.map((n) =>
+                  n.id === updated.id ? { ...updated, selected: n.selected } : n,
+                );
+                viewing = updated;
+                $statusMessage = "Przeliczono";
+                setTimeout(() => ($statusMessage = ""), 1500);
+              } catch (e: any) {
+                $statusMessage = `Błąd: ${e}`;
+              }
+            }}
+            title="Przelicz wartości slotów z oryginalnej odpowiedzi LLM (po poprawkach parsera)"
+          >
+            Przelicz
+          </button>
+        {/if}
+        <button
+          class="btn btn-solid btn-sm"
+          onclick={async () => {
+            if (viewing) {
+              await writeText(viewing.text);
+              $statusMessage = "Skopiowano";
+              setTimeout(() => ($statusMessage = ""), 1500);
+            }
+          }}
+        >
+          Kopiuj
+        </button>
+      </div>
+    </header>
+    <div class="viewer-body">
+      {#if viewing.filled && viewingTemplate}
+        <FilledDocument
+          noteId={viewing.id}
+          ast={viewingTemplate.ast}
+          filled={viewing.filled}
+        />
+      {:else}
+        <pre class="viewer-plain">{viewing.text}</pre>
+      {/if}
+    </div>
+  </section>
+{:else if showCompiled}
   <section class="compiled">
     <header class="compiled-header">
       <button class="btn btn-ghost" onclick={() => (showCompiled = false)}>
@@ -215,15 +295,35 @@
                 class:selected={note.selected}
                 role="button"
                 tabindex="0"
-                onclick={() => toggleSelect(note.id)}
+                onclick={() => openNote(note)}
                 onkeydown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    openNote(note);
+                  } else if (e.key === " ") {
                     e.preventDefault();
                     toggleSelect(note.id);
                   }
                 }}
               >
-                <span class="note-check" class:checked={note.selected}>
+                <span
+                  class="note-check"
+                  class:checked={note.selected}
+                  role="checkbox"
+                  aria-checked={note.selected}
+                  tabindex="-1"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    toggleSelect(note.id);
+                  }}
+                  onkeydown={(e) => {
+                    if (e.key === " " || e.key === "Enter") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      toggleSelect(note.id);
+                    }
+                  }}
+                >
                   {#if note.selected}
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="20 6 9 17 4 12"/>
@@ -298,13 +398,60 @@
 
 <style>
   .notes,
-  .compiled {
+  .compiled,
+  .viewer {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-height: 0;
     background: var(--bg-subtle);
     border-top: 1px solid var(--border);
+  }
+
+  .viewer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+    gap: 10px;
+  }
+  .viewer-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .viewer-title {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .viewer-title > span:first-child {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .viewer-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .viewer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+  }
+  .viewer-plain {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text);
   }
 
   .notes-header {

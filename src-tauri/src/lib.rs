@@ -1,5 +1,7 @@
+mod ast;
 mod builtin_templates;
 mod commands;
+mod kv_cache;
 mod llm_engine;
 mod model_manager;
 mod notes;
@@ -9,7 +11,8 @@ mod templates;
 mod whisper_engine;
 
 use commands::{
-    AudioLevelState, LlmState, NotesState, RecorderState, TemplatesState, WhisperState,
+    AudioLevelState, KvCacheState, LlmState, NotesState, RecorderState, TemplatesState,
+    WhisperState,
 };
 use notes::NotesStore;
 use std::collections::VecDeque;
@@ -46,6 +49,7 @@ pub fn run() {
             )))));
             app.manage(LlmState(Arc::new(Mutex::new(None))));
             app.manage(TemplatesState(Mutex::new(TemplatesStore::new(&data_dir))));
+            app.manage(KvCacheState(Mutex::new(kv_cache::KvCacheIndex::new(&data_dir))));
 
             Ok(())
         })
@@ -66,6 +70,8 @@ pub fn run() {
             commands::clear_notes,
             commands::add_note_with_template,
             commands::update_note_with_template,
+            commands::update_filled_value,
+            commands::reparse_note,
             commands::check_llm_model_exists,
             commands::download_llm_model,
             commands::load_llm_model,

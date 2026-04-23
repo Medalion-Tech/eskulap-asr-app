@@ -1,6 +1,6 @@
 [package]
 name = "eskulap-asr"
-version = "0.3.12"
+version = "0.3.13"
 description = "Desktop wrapper for Eskulap ASR medical speech recognition"
 authors = ["Lion AI"]
 license = "Apache-2.0"
@@ -49,6 +49,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # whisper-rs musi wygrać kolizję, żeby zapewnić poprawny backend ggml (z AVX2).
 whisper-rs = { version = "0.16" }
 llama-cpp-4 = { version = "0.2.46", default-features = false }
+num_cpus = "1.16"
+
+[target.'cfg(windows)'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
 
 [profile.release]
 lto           = "fat"   # link-time optimisation across crates (whole-program)

@@ -1,3 +1,4 @@
+use crate::ast::FilledTemplate;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -12,6 +13,10 @@ pub struct Note {
     pub template_id: Option<String>,
     #[serde(default)]
     pub template_name: Option<String>,
+    #[serde(default)]
+    pub filled: Option<FilledTemplate>,
+    #[serde(default)]
+    pub raw_llm_output: Option<String>,
 }
 
 pub struct NotesStore {
@@ -37,6 +42,10 @@ impl NotesStore {
         self.notes.clone()
     }
 
+    pub fn get(&self, id: &str) -> Option<Note> {
+        self.notes.iter().find(|n| n.id == id).cloned()
+    }
+
     pub fn add(&mut self, text: String) -> Note {
         let note = Note {
             id: uuid::Uuid::new_v4().to_string(),
@@ -45,6 +54,8 @@ impl NotesStore {
             raw_transcription: None,
             template_id: None,
             template_name: None,
+            filled: None,
+            raw_llm_output: None,
         };
         self.notes.push(note.clone());
         self.save();
@@ -57,6 +68,8 @@ impl NotesStore {
         raw_transcription: String,
         template_id: String,
         template_name: String,
+        filled: Option<FilledTemplate>,
+        raw_llm_output: Option<String>,
     ) -> Note {
         let note = Note {
             id: uuid::Uuid::new_v4().to_string(),
@@ -65,6 +78,8 @@ impl NotesStore {
             raw_transcription: Some(raw_transcription),
             template_id: Some(template_id),
             template_name: Some(template_name),
+            filled,
+            raw_llm_output,
         };
         self.notes.push(note.clone());
         self.save();
@@ -104,6 +119,20 @@ impl NotesStore {
             note.text = text;
             note.template_id = Some(template_id);
             note.template_name = Some(template_name);
+            let updated = note.clone();
+            self.save();
+            Some(updated)
+        } else {
+            None
+        }
+    }
+
+    /// Replace the full filled template (after structural edits) and re-render `text`.
+    /// Caller supplies the new `text` (computed from template AST + filled in commands layer).
+    pub fn set_filled(&mut self, id: &str, filled: FilledTemplate, text: String) -> Option<Note> {
+        if let Some(note) = self.notes.iter_mut().find(|n| n.id == id) {
+            note.filled = Some(filled);
+            note.text = text;
             let updated = note.clone();
             self.save();
             Some(updated)

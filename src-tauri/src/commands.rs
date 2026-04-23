@@ -1,4 +1,5 @@
-use crate::llm_engine::{build_prompt, LlmEngine};
+use crate::ast::{self, FilledTemplate, FilledValue};
+use crate::llm_engine::{build_prompt_split, LlmEngine};
 use crate::model_manager::{self, DownloadProgress};
 use crate::notes::{Note, NotesStore};
 use crate::recorder::{AudioRecorder, LevelHistory};
@@ -51,7 +52,7 @@ pub fn get_accelerator_info() -> AcceleratorInfo {
         "unknown".to_string()
     };
 
-    let threads = crate::whisper_engine::default_threads();
+    let threads = num_cpus::get_physical().min(12).max(1) as i32;
 
     let cpu_model = detect_cpu_model();
     let (backend, device) = detect_backend(&cpu_model);
@@ -179,6 +180,7 @@ pub struct NotesState(pub Mutex<NotesStore>);
 pub struct AudioLevelState(pub LevelHistory);
 pub struct LlmState(pub Arc<Mutex<Option<LlmEngine>>>);
 pub struct TemplatesState(pub Mutex<TemplatesStore>);
+pub struct KvCacheState(pub Mutex<crate::kv_cache::KvCacheIndex>);
 
 #[tauri::command]
 pub fn check_model_exists(app: tauri::AppHandle) -> bool {
@@ -265,18 +267,25 @@ pub fn get_audio_levels(
 pub async fn transcribe(
     whisper: tauri::State<'_, WhisperState>,
     audio: Vec<f32>,
-    on_progress: Channel<u32>,
+    on_progress: Channel<i32>,
 ) -> Result<String, String> {
-    let engine_arc = whisper.0.clone();
+    // Clone the engine (cheap: it's an Arc<WhisperContext> internally) so we
+    // don't hold the outer Mutex across the `spawn_blocking` transcription,
+    // which would serialize other whisper-touching commands (e.g. status).
+    let engine = {
+        let guard = whisper.0.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or("Model not loaded")?.clone()
+    };
+
     let text = tokio::task::spawn_blocking(move || {
-        let guard = engine_arc.lock().map_err(|e| e.to_string())?;
-        let engine = guard.as_ref().ok_or("Model not loaded")?;
-        engine.transcribe(&audio, move |pct| {
-            let _ = on_progress.send(pct as u32);
+        engine.transcribe(&audio, move |p: i32| {
+            let _ = on_progress.send(p);
         })
     })
     .await
-    .map_err(|e| format!("Transcribe task failed: {}", e))??;
+    .map_err(|e| format!("Transcription task failed: {:?}", e))??;
+
+
     log::info!("Transcribed: {} chars", text.len());
     Ok(text)
 }
@@ -345,9 +354,78 @@ pub fn add_note_with_template(
     raw_transcription: String,
     template_id: String,
     template_name: String,
+    filled: Option<FilledTemplate>,
+    raw_llm_output: Option<String>,
 ) -> Result<Note, String> {
     let mut guard = notes.0.lock().map_err(|e| e.to_string())?;
-    Ok(guard.add_with_template(text, raw_transcription, template_id, template_name))
+    Ok(guard.add_with_template(
+        text,
+        raw_transcription,
+        template_id,
+        template_name,
+        filled,
+        raw_llm_output,
+    ))
+}
+
+/// Re-parse the raw_llm_output of a note with the current parser + template
+/// AST. Use this to recover notes generated before a parser fix.
+#[tauri::command]
+pub fn reparse_note(
+    notes: tauri::State<'_, NotesState>,
+    templates: tauri::State<'_, TemplatesState>,
+    note_id: String,
+) -> Result<Note, String> {
+    let (template, raw_output) = {
+        let notes_guard = notes.0.lock().map_err(|e| e.to_string())?;
+        let note = notes_guard.get(&note_id).ok_or("Note not found")?;
+        let template_id = note.template_id.clone().ok_or("Note has no template")?;
+        let raw = note.raw_llm_output.clone().ok_or("Note has no raw_llm_output")?;
+        let tpl_guard = templates.0.lock().map_err(|e| e.to_string())?;
+        let tpl = tpl_guard.get(&template_id).ok_or("Template not found")?;
+        (tpl, raw)
+    };
+
+    let (mut filled, _q) = ast::parse_llm_output(&template.ast, &raw_output);
+    filled.template_id = template.id.clone();
+    let new_text = ast::render_display(&template.ast, &filled);
+
+    let mut notes_guard = notes.0.lock().map_err(|e| e.to_string())?;
+    notes_guard
+        .set_filled(&note_id, filled, new_text)
+        .ok_or_else(|| "Note not found".to_string())
+}
+
+/// Atomically update a single slot's filled value and re-render Note.text.
+/// Marks slot_id as user-edited.
+#[tauri::command]
+pub fn update_filled_value(
+    notes: tauri::State<'_, NotesState>,
+    templates: tauri::State<'_, TemplatesState>,
+    note_id: String,
+    slot_id: String,
+    value: FilledValue,
+) -> Result<Note, String> {
+    let (ast, mut filled) = {
+        let notes_guard = notes.0.lock().map_err(|e| e.to_string())?;
+        let note = notes_guard.get(&note_id).ok_or("Note not found")?;
+        let template_id = note.template_id.clone().ok_or("Note has no template")?;
+        let filled = note.filled.clone().ok_or("Note has no filled template")?;
+        let tpl_guard = templates.0.lock().map_err(|e| e.to_string())?;
+        let tpl = tpl_guard.get(&template_id).ok_or("Template not found")?;
+        (tpl.ast, filled)
+    };
+
+    filled.values.insert(slot_id.clone(), value);
+    if !filled.user_edited.contains(&slot_id) {
+        filled.user_edited.push(slot_id);
+    }
+    let new_text = ast::render_display(&ast, &filled);
+
+    let mut notes_guard = notes.0.lock().map_err(|e| e.to_string())?;
+    notes_guard
+        .set_filled(&note_id, filled, new_text)
+        .ok_or_else(|| "Note not found".to_string())
 }
 
 #[tauri::command]
@@ -445,20 +523,36 @@ pub fn add_template(
 #[tauri::command]
 pub fn update_template(
     templates: tauri::State<'_, TemplatesState>,
+    kv_cache: tauri::State<'_, KvCacheState>,
     id: String,
     template: Template,
 ) -> Result<Template, String> {
-    let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
-    guard.update(&id, template)
+    let result = {
+        let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
+        guard.update(&id, template)?
+    };
+    if let Ok(mut cache) = kv_cache.0.lock() {
+        cache.invalidate_template(&id);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 pub fn delete_template(
     templates: tauri::State<'_, TemplatesState>,
+    kv_cache: tauri::State<'_, KvCacheState>,
     id: String,
 ) -> Result<bool, String> {
-    let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
-    guard.delete(&id)
+    let ok = {
+        let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
+        guard.delete(&id)?
+    };
+    if ok {
+        if let Ok(mut cache) = kv_cache.0.lock() {
+            cache.invalidate_template(&id);
+        }
+    }
+    Ok(ok)
 }
 
 #[tauri::command]
@@ -472,18 +566,44 @@ pub fn reset_builtin_templates(
 
 // ---- Template-based generation ----
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GenerationResult {
+    pub display_text: String,
+    pub filled: FilledTemplate,
+    pub raw_output: String,
+    pub parse_quality_low: bool,
+    pub total_slots: u32,
+    pub parsed_ok: u32,
+    pub cache_hit: bool,
+}
+
 #[tauri::command]
 pub async fn generate_from_template(
     app: tauri::AppHandle,
     llm: tauri::State<'_, LlmState>,
     templates: tauri::State<'_, TemplatesState>,
+    kv_cache: tauri::State<'_, KvCacheState>,
     template_id: String,
     raw_transcription: String,
     on_token: Channel<String>,
-) -> Result<String, String> {
+) -> Result<GenerationResult, String> {
     let template = {
         let guard = templates.0.lock().map_err(|e| e.to_string())?;
         guard.get(&template_id).ok_or("Template not found")?
+    };
+
+    // KV cache: look up (and reserve a slot if miss). We hold the lock only
+    // briefly; generation runs with the cache state unlocked.
+    let ast_hash = ast::ast_hash(&template.ast);
+    let (cache_entry, cache_key, save_path) = {
+        let mut cache_guard = kv_cache.0.lock().map_err(|e| e.to_string())?;
+        match cache_guard.lookup(&template.id, &ast_hash) {
+            Some((entry, key)) => (Some(entry), key, None),
+            None => {
+                let (path, key) = cache_guard.reserve(&template.id, &ast_hash);
+                (None, key, Some(path))
+            }
+        }
     };
 
     // Lazy-load: if LLM not yet loaded, load it now from disk.
@@ -508,26 +628,85 @@ pub async fn generate_from_template(
     }
 
     let engine_arc = llm.0.clone();
-
+    let template_for_task = template.clone();
     let raw = raw_transcription;
-    let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let guard = engine_arc.lock().map_err(|e| e.to_string())?;
-        let engine = guard.as_ref().ok_or("LLM model not loaded")?;
+    let save_path_for_task = save_path.clone();
+    let cache_entry_for_task = cache_entry.clone();
 
-        let prompt = build_prompt(
-            &template.content,
-            template.example_input.as_deref(),
-            template.example_output.as_deref(),
-            &raw,
-        );
+    let generate_output = tokio::task::spawn_blocking(
+        move || -> Result<crate::llm_engine::GenerateOutput, String> {
+            let guard = engine_arc.lock().map_err(|e| e.to_string())?;
+            let engine = guard.as_ref().ok_or("LLM model not loaded")?;
 
-        engine.generate(&prompt, 1500, &mut |piece| {
-            let _ = on_token.send(piece.to_string());
-        })
-    })
+            let stringified = ast::stringify_for_llm(&template_for_task.ast);
+            let example_out = template_for_task
+                .example_filled
+                .as_ref()
+                .map(|ef| ast::render_with_values(&template_for_task.ast, ef));
+            let (prefix, suffix) = build_prompt_split(
+                &stringified,
+                template_for_task.example_input.as_deref(),
+                example_out.as_deref(),
+                &raw,
+            );
+
+            engine.generate(
+                &prefix,
+                &suffix,
+                cache_entry_for_task.as_ref(),
+                save_path_for_task.as_deref(),
+                2000,
+                &mut |piece| {
+                    let _ = on_token.send(piece.to_string());
+                },
+            )
+        },
+    )
     .await
     .map_err(|e| format!("LLM task failed: {}", e))??;
 
-    log::info!("LLM generated {} chars", result.len());
-    Ok(result.trim().to_string())
+    // On cache miss with successful save, register the entry.
+    if let Some(saved) = &generate_output.saved_prefix {
+        if let Ok(mut cache_guard) = kv_cache.0.lock() {
+            if let Some(file_name) = saved
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+            {
+                cache_guard.insert(
+                    cache_key,
+                    file_name,
+                    saved.prefix_token_count,
+                    template.id.clone(),
+                    ast_hash.clone(),
+                );
+            }
+        }
+    }
+
+    let raw_output = generate_output.text;
+
+    let trimmed = raw_output.trim().to_string();
+    let (mut filled, quality) = ast::parse_llm_output(&template.ast, &trimmed);
+    filled.template_id = template.id.clone();
+    let display_text = ast::render_display(&template.ast, &filled);
+
+    log::info!(
+        "LLM generated {} chars; slots parsed {}/{}; cache_hit={}",
+        trimmed.len(),
+        quality.parsed_ok,
+        quality.total_slots,
+        generate_output.cache_hit,
+    );
+
+    Ok(GenerationResult {
+        display_text,
+        filled,
+        raw_output: trimmed,
+        parse_quality_low: quality.low,
+        total_slots: quality.total_slots,
+        parsed_ok: quality.parsed_ok,
+        cache_hit: generate_output.cache_hit,
+    })
 }

@@ -1,8 +1,11 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+#[derive(Clone)]
 pub struct WhisperEngine {
-    ctx: WhisperContext,
+    ctx: Arc<WhisperContext>,
 }
 
 unsafe impl Send for WhisperEngine {}
@@ -33,16 +36,24 @@ impl WhisperEngine {
             crate::commands::BUILD_VARIANT,
         );
 
-        Ok(Self { ctx })
+        Ok(Self {
+            ctx: Arc::new(ctx),
+        })
     }
 
     /// Transcribe audio PCM (16 kHz, mono, f32) with an optional progress callback (0–100).
     /// Pass `|_| {}` as `on_progress` if you don't need progress updates.
-    pub fn transcribe(
+    /// The progress callback is automatically deduped — only monotonically
+    /// increasing values reach the user (prevents UI jitter from whisper.cpp's
+    /// occasional repeat emissions of the same percent).
+    pub fn transcribe<F>(
         &self,
         audio_pcm: &[f32],
-        on_progress: impl Fn(i32) + Send + 'static,
-    ) -> Result<String, String> {
+        mut on_progress: F,
+    ) -> Result<String, String>
+    where
+        F: FnMut(i32) + Send + 'static,
+    {
         let mut state = self
             .ctx
             .create_state()
@@ -55,6 +66,8 @@ impl WhisperEngine {
         params.set_print_realtime(false);
         params.set_print_special(false);
         params.set_print_timestamps(false);
+        params.set_single_segment(true);
+        params.set_n_max_text_ctx(0);
 
         let n_threads = default_threads();
         params.set_n_threads(n_threads);
@@ -72,7 +85,18 @@ impl WhisperEngine {
         params.set_n_max_text_ctx(64);
         // ─────────────────────────────────────────────────────────────────────
 
-        params.set_progress_callback_safe(on_progress);
+        // Dedupe progress emissions — whisper.cpp sometimes repeats the same
+        // percent or emits them out of order; we only forward monotonically
+        // increasing values to avoid UI jitter.
+        let last = Arc::new(AtomicI32::new(-1));
+        let last2 = Arc::clone(&last);
+        params.set_progress_callback_safe(move |p: i32| {
+            let old = last2.load(Ordering::Relaxed);
+            if p > old {
+                last2.store(p, Ordering::Relaxed);
+                on_progress(p);
+            }
+        });
 
         let audio_seconds = audio_pcm.len() as f64 / 16_000.0;
         let t0 = std::time::Instant::now();
