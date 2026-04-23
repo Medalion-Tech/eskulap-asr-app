@@ -276,14 +276,31 @@ jobs:
             - **Apple Silicon** — `Eskulap.ASR_<ver>_aarch64.dmg`
             - **Intel** — `Eskulap.ASR_<ver>_x64.dmg`
 
-            Aplikacja jest **ad-hoc signed** (bez certyfikatu Apple Developer).
-            Jeśli pojawi się "Eskulap ASR jest uszkodzona" — otwórz Terminal:
+            Aplikacja jest **ad-hoc signed** (bez certyfikatu Apple Developer $99/rok),
+            więc macOS Gatekeeper przy pierwszym uruchomieniu pokaże dialog
+            *"Rzecz »Eskulap ASR« nie została otwarta — Apple nie może zweryfikować..."*.
+
+            **Rozwiązanie (jedna komenda w Terminalu):**
 
             ```bash
-            xattr -cr "/Applications/Eskulap ASR.app"
+            sudo xattr -cr "/Applications/Eskulap ASR.app"
             ```
 
-            Potem prawym przyciskiem → **Otwórz**.
+            To usuwa atrybut `com.apple.quarantine` który macOS dokleja każdemu
+            plikowi pobranemu z internetu. Po tej komendzie uruchamiasz normalnie
+            z Launchpada / Applications.
+
+            **Alternatywa klikana** (dla osób unikających Terminala):
+
+            1. Kliknij **Gotowe** na dialogu
+            2. **Ustawienia systemowe** → **Prywatność i bezpieczeństwo**
+            3. Przewiń na sam dół → sekcja **Bezpieczeństwo**
+            4. Przy linii *"Aplikacja »Eskulap ASR« została zablokowana..."* kliknij **Otwórz mimo to**
+            5. Wpisz hasło → uruchom aplikację jeszcze raz
+
+            Na macOS Sequoia (15+) sam `xattr` może nie wystarczyć — wtedy
+            użyj drogi klikanej. Na wcześniejszych macOS (Sonoma 14, Ventura 13)
+            `xattr` wystarcza.
 
             ---
 
@@ -293,7 +310,7 @@ jobs:
             ## Model
 
             [`lion-ai/eskulap-asr-turbo-beta`](https://huggingface.co/lion-ai/eskulap-asr-turbo-beta) — fine-tuned whisper-large-v3-turbo dla polskiej mowy medycznej (Q8_0 quantization).
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 

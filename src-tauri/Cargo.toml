@@ -1,6 +1,6 @@
 [package]
 name = "eskulap-asr"
-version = "0.3.13"
+version = "0.3.14"
 description = "Desktop wrapper for Eskulap ASR medical speech recognition"
 authors = ["Lion AI"]
 license = "Apache-2.0"
@@ -51,8 +51,17 @@ whisper-rs = { version = "0.16" }
 llama-cpp-4 = { version = "0.2.46", default-features = false }
 num_cpus = "1.16"
 
-[target.'cfg(windows)'.dependencies]
-mimalloc = { version = "0.1", default-features = false }
+# NOTE: mimalloc (was: target.cfg(windows).dependencies) removed in v0.3.14.
+# On Windows with profile.release.lto = "fat", mimalloc-override's forced
+# malloc/free symbol injection caused the linker to dead-strip llama.cpp's
+# build-info.cpp static lib, producing four unresolved externals at final
+# link time (llama_build_number / llama_commit / llama_compiler /
+# llama_build_target) all referenced from llama-cpp-sys-4's common.cpp.
+# Since llama.cpp 0.2.46 split llama-common-base out of llama-common, the
+# build-info symbols live in a separate static lib that LTO otherwise
+# eliminates as "unused" until link time. Removing the allocator override
+# keeps the default CRT malloc on Windows — we can re-add a more targeted
+# allocator (e.g. only in bin/main, not global) later if profiling justifies.
 
 [profile.release]
 lto           = "fat"   # link-time optimisation across crates (whole-program)
