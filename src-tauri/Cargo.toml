@@ -1,6 +1,6 @@
 [package]
 name = "eskulap-asr"
-version = "0.3.1"
+version = "0.3.15"
 description = "Desktop wrapper for Eskulap ASR medical speech recognition"
 authors = ["Lion AI"]
 license = "Apache-2.0"
@@ -16,6 +16,11 @@ default = []
 accel-metal  = ["whisper-rs/metal",  "llama-cpp-4/metal"]
 accel-vulkan = ["whisper-rs/vulkan", "llama-cpp-4/vulkan"]
 accel-cuda   = ["whisper-rs/cuda",   "llama-cpp-4/cuda"]
+# NOTE: deliberately NOT linking whisper-rs/openmp on Windows — MSVC OpenMP
+# requires vcomp140.dll from VC++ Redistributable, which many clinic PCs lack.
+# Without it whisper.cpp silently aborts on the first #pragma omp parallel
+# region (fault 0xC0000135). We rely on whisper.cpp's internal thread pool
+# instead; ~10–20% perf loss vs. OpenMP, but zero-dependency install.
 accel-cpu    = []
 
 [build-dependencies]
@@ -37,9 +42,30 @@ uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 sha2 = "0.10"
 hex = "0.4"
+# Local time formatting for note timestamps. default-features = false drops
+# the unused `wasmbind`/`unstable-locales` deps; `clock` keeps Local::now().
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# whisper-rs PRZED llama-cpp-4 — first-definition-wins dla symboli ggml.
+# whisper-rs musi wygrać kolizję, żeby zapewnić poprawny backend ggml (z AVX2).
 whisper-rs = { version = "0.16" }
 llama-cpp-4 = { version = "0.2.46", default-features = false }
 num_cpus = "1.16"
 
-[target.'cfg(windows)'.dependencies]
-mimalloc = { version = "0.1", default-features = false }
+# NOTE: mimalloc (was: target.cfg(windows).dependencies) removed in v0.3.14.
+# On Windows with profile.release.lto = "fat", mimalloc-override's forced
+# malloc/free symbol injection caused the linker to dead-strip llama.cpp's
+# build-info.cpp static lib, producing four unresolved externals at final
+# link time (llama_build_number / llama_commit / llama_compiler /
+# llama_build_target) all referenced from llama-cpp-sys-4's common.cpp.
+# Since llama.cpp 0.2.46 split llama-common-base out of llama-common, the
+# build-info symbols live in a separate static lib that LTO otherwise
+# eliminates as "unused" until link time. Removing the allocator override
+# keeps the default CRT malloc on Windows — we can re-add a more targeted
+# allocator (e.g. only in bin/main, not global) later if profiling justifies.
+
+[profile.release]
+lto           = "fat"   # link-time optimisation across crates (whole-program)
+codegen-units = 1       # single CGU → better inlining; pairs with fat LTO
+opt-level     = 3
+strip         = "symbols"
+# Note: fat LTO adds ~3–10 min to CI. Switch to lto = "thin" if it becomes a bottleneck.
