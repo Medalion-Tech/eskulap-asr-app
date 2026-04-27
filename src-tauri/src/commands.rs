@@ -22,6 +22,12 @@ pub struct AcceleratorInfo {
     pub build_variant: String,
 }
 
+#[derive(Serialize)]
+pub struct SaveSettingsResult {
+    pub saved: bool,
+    pub llm_unloaded: bool,
+}
+
 const BUILD_VARIANT: &str = if cfg!(feature = "accel-cuda") {
     "cuda"
 } else if cfg!(feature = "accel-metal") {
@@ -80,8 +86,8 @@ fn detect_backend(cpu_model: &str) -> (String, String) {
     }
     #[cfg(all(target_os = "linux", feature = "accel-vulkan"))]
     {
-        let devices = std::panic::catch_unwind(whisper_rs::vulkan::list_devices)
-            .unwrap_or_default();
+        let devices =
+            std::panic::catch_unwind(whisper_rs::vulkan::list_devices).unwrap_or_default();
         if let Some(first) = devices.into_iter().next() {
             return ("Vulkan".to_string(), first.name);
         }
@@ -224,10 +230,7 @@ pub fn stop_recording(recorder: tauri::State<'_, RecorderState>) -> Result<Vec<f
 }
 
 #[tauri::command]
-pub fn get_audio_levels(
-    audio_level: tauri::State<'_, AudioLevelState>,
-    count: usize,
-) -> Vec<f32> {
+pub fn get_audio_levels(audio_level: tauri::State<'_, AudioLevelState>, count: usize) -> Vec<f32> {
     let hist = match audio_level.0.lock() {
         Ok(h) => h,
         Err(_) => return vec![],
@@ -250,6 +253,7 @@ pub fn get_audio_levels(
 
 #[tauri::command]
 pub async fn transcribe(
+    app: tauri::AppHandle,
     whisper: tauri::State<'_, WhisperState>,
     audio: Vec<f32>,
     on_progress: Channel<i32>,
@@ -258,9 +262,10 @@ pub async fn transcribe(
         let guard = whisper.0.lock().map_err(|e| e.to_string())?;
         guard.as_ref().ok_or("Model not loaded")?.clone()
     };
+    let asr_settings = settings::load(&data_dir(&app)?).asr;
 
     let text = tokio::task::spawn_blocking(move || {
-        engine.transcribe(&audio, move |p: i32| {
+        engine.transcribe(&audio, &asr_settings, move |p: i32| {
             let _ = on_progress.send(p);
         })
     })
@@ -339,7 +344,10 @@ pub fn reparse_note(
         let notes_guard = notes.0.lock().map_err(|e| e.to_string())?;
         let note = notes_guard.get(&note_id).ok_or("Note not found")?;
         let template_id = note.template_id.clone().ok_or("Note has no template")?;
-        let raw = note.raw_llm_output.clone().ok_or("Note has no raw_llm_output")?;
+        let raw = note
+            .raw_llm_output
+            .clone()
+            .ok_or("Note has no raw_llm_output")?;
         let tpl_guard = templates.0.lock().map_err(|e| e.to_string())?;
         let tpl = tpl_guard.get(&template_id).ok_or("Template not found")?;
         (tpl, raw)
@@ -407,12 +415,48 @@ pub fn check_llm_model_exists(app: tauri::AppHandle) -> bool {
 }
 
 #[tauri::command]
+pub fn get_llm_model_variants(
+    app: tauri::AppHandle,
+) -> Result<Vec<model_manager::llm::LlmModelVariant>, String> {
+    let settings = settings::load(&data_dir(&app)?);
+    Ok(model_manager::llm::list(&app, &settings.llm.model_id))
+}
+
+#[tauri::command]
 pub async fn download_llm_model(
     app: tauri::AppHandle,
     on_progress: Channel<DownloadProgress>,
 ) -> Result<(), String> {
     model_manager::llm::download(&app, &on_progress).await?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn download_llm_model_variant(
+    app: tauri::AppHandle,
+    model_id: String,
+    on_progress: Channel<DownloadProgress>,
+) -> Result<(), String> {
+    model_manager::llm::download_variant(&app, &model_id, &on_progress).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_llm_model_variant(
+    app: tauri::AppHandle,
+    llm: tauri::State<'_, LlmState>,
+    model_id: String,
+) -> Result<bool, String> {
+    let settings = settings::load(&data_dir(&app)?);
+    let deleted = model_manager::llm::delete_variant(&app, &model_id)?;
+    if deleted && settings.llm.model_id == model_id {
+        let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            *guard = None;
+            log::info!("LLM model unloaded after deleting active model variant");
+        }
+    }
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -456,16 +500,38 @@ pub fn get_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-pub fn set_settings(app: tauri::AppHandle, new_settings: AppSettings) -> Result<(), String> {
-    settings::save(&data_dir(&app)?, &new_settings)
+pub fn get_default_settings() -> AppSettings {
+    AppSettings::default()
+}
+
+#[tauri::command]
+pub fn set_settings(
+    app: tauri::AppHandle,
+    llm: tauri::State<'_, LlmState>,
+    new_settings: AppSettings,
+) -> Result<SaveSettingsResult, String> {
+    let old_settings = settings::load(&data_dir(&app)?);
+    settings::validate(&new_settings)?;
+    settings::save(&data_dir(&app)?, &new_settings)?;
+    let mut llm_unloaded = false;
+    if !new_settings.llm_enabled || old_settings.llm.model_id != new_settings.llm.model_id {
+        let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            *guard = None;
+            llm_unloaded = true;
+            log::info!("LLM model unloaded after settings change");
+        }
+    }
+    Ok(SaveSettingsResult {
+        saved: true,
+        llm_unloaded,
+    })
 }
 
 // ---- Templates ----
 
 #[tauri::command]
-pub fn get_templates(
-    templates: tauri::State<'_, TemplatesState>,
-) -> Result<Vec<Template>, String> {
+pub fn get_templates(templates: tauri::State<'_, TemplatesState>) -> Result<Vec<Template>, String> {
     let guard = templates.0.lock().map_err(|e| e.to_string())?;
     Ok(guard.get_all())
 }
@@ -515,9 +581,7 @@ pub fn delete_template(
 }
 
 #[tauri::command]
-pub fn reset_builtin_templates(
-    templates: tauri::State<'_, TemplatesState>,
-) -> Result<(), String> {
+pub fn reset_builtin_templates(templates: tauri::State<'_, TemplatesState>) -> Result<(), String> {
     let mut guard = templates.0.lock().map_err(|e| e.to_string())?;
     guard.reset_builtins();
     Ok(())
@@ -546,6 +610,11 @@ pub async fn generate_from_template(
     raw_transcription: String,
     on_token: Channel<String>,
 ) -> Result<GenerationResult, String> {
+    let app_settings = settings::load(&data_dir(&app)?);
+    if !app_settings.llm_enabled {
+        return Err("AI notatek jest wyłączone w ustawieniach".to_string());
+    }
+
     let template = {
         let guard = templates.0.lock().map_err(|e| e.to_string())?;
         guard.get(&template_id).ok_or("Template not found")?
@@ -555,13 +624,17 @@ pub async fn generate_from_template(
     // briefly; generation runs with the cache state unlocked.
     let ast_hash = ast::ast_hash(&template.ast);
     let (cache_entry, cache_key, save_path) = {
-        let mut cache_guard = kv_cache.0.lock().map_err(|e| e.to_string())?;
-        match cache_guard.lookup(&template.id, &ast_hash) {
-            Some((entry, key)) => (Some(entry), key, None),
-            None => {
-                let (path, key) = cache_guard.reserve(&template.id, &ast_hash);
-                (None, key, Some(path))
+        if app_settings.llm.kv_cache_enabled {
+            let mut cache_guard = kv_cache.0.lock().map_err(|e| e.to_string())?;
+            match cache_guard.lookup(&template.id, &ast_hash) {
+                Some((entry, key)) => (Some(entry), key, None),
+                None => {
+                    let (path, key) = cache_guard.reserve(&template.id, &ast_hash);
+                    (None, key, Some(path))
+                }
             }
+        } else {
+            (None, String::new(), None)
         }
     };
 
@@ -591,6 +664,7 @@ pub async fn generate_from_template(
     let raw = raw_transcription;
     let save_path_for_task = save_path.clone();
     let cache_entry_for_task = cache_entry.clone();
+    let llm_settings_for_task = app_settings.llm.clone();
 
     let generate_output = tokio::task::spawn_blocking(
         move || -> Result<crate::llm_engine::GenerateOutput, String> {
@@ -612,9 +686,9 @@ pub async fn generate_from_template(
             engine.generate(
                 &prefix,
                 &suffix,
+                &llm_settings_for_task,
                 cache_entry_for_task.as_ref(),
                 save_path_for_task.as_deref(),
-                2000,
                 &mut |piece| {
                     let _ = on_token.send(piece.to_string());
                 },
@@ -625,21 +699,23 @@ pub async fn generate_from_template(
     .map_err(|e| format!("LLM task failed: {}", e))??;
 
     // On cache miss with successful save, register the entry.
-    if let Some(saved) = &generate_output.saved_prefix {
-        if let Ok(mut cache_guard) = kv_cache.0.lock() {
-            if let Some(file_name) = saved
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string())
-            {
-                cache_guard.insert(
-                    cache_key,
-                    file_name,
-                    saved.prefix_token_count,
-                    template.id.clone(),
-                    ast_hash.clone(),
-                );
+    if app_settings.llm.kv_cache_enabled {
+        if let Some(saved) = &generate_output.saved_prefix {
+            if let Ok(mut cache_guard) = kv_cache.0.lock() {
+                if let Some(file_name) = saved
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                {
+                    cache_guard.insert(
+                        cache_key,
+                        file_name,
+                        saved.prefix_token_count,
+                        template.id.clone(),
+                        ast_hash.clone(),
+                    );
+                }
             }
         }
     }

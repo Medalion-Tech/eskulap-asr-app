@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+use crate::settings::{AsrSettings, AsrStrategy};
+
 #[derive(Clone)]
 pub struct WhisperEngine {
     ctx: Arc<WhisperContext>,
@@ -20,14 +22,13 @@ impl WhisperEngine {
         )
         .map_err(|e| format!("Failed to load whisper model: {}", e))?;
 
-        Ok(Self {
-            ctx: Arc::new(ctx),
-        })
+        Ok(Self { ctx: Arc::new(ctx) })
     }
 
     pub fn transcribe<F>(
         &self,
         audio_pcm: &[f32],
+        settings: &AsrSettings,
         mut on_progress: F,
     ) -> Result<String, String>
     where
@@ -38,18 +39,35 @@ impl WhisperEngine {
             .create_state()
             .map_err(|e| format!("Failed to create whisper state: {}", e))?;
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some("pl"));
-        params.set_translate(false);
+        let strategy = match settings.strategy {
+            AsrStrategy::Greedy => SamplingStrategy::Greedy {
+                best_of: settings.greedy_best_of,
+            },
+            AsrStrategy::BeamSearch => SamplingStrategy::BeamSearch {
+                beam_size: settings.beam_size,
+                patience: -1.0,
+            },
+        };
+        let mut params = FullParams::new(strategy);
+        if settings.language == "auto" {
+            params.set_detect_language(true);
+            params.set_language(None);
+        } else {
+            params.set_language(Some(settings.language.as_str()));
+        }
+        params.set_translate(settings.translate);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_special(false);
         params.set_print_timestamps(false);
-        params.set_single_segment(true);
-        params.set_n_max_text_ctx(0);
+        params.set_single_segment(settings.single_segment);
+        params.set_n_max_text_ctx(settings.max_text_context);
+        params.set_temperature(settings.temperature);
+        if !settings.initial_prompt.trim().is_empty() {
+            params.set_initial_prompt(settings.initial_prompt.trim());
+        }
 
-        let n_threads = num_cpus::get_physical().min(12).max(1) as i32;
-        params.set_n_threads(n_threads);
+        params.set_n_threads(settings.threads);
 
         let progress = Arc::new(AtomicI32::new(0));
         let progress2 = Arc::clone(&progress);

@@ -26,7 +26,7 @@ export interface Template {
   ast_version: number;
 }
 
-export type AppScreen = "setup" | "loading" | "main" | "settings";
+export type AppScreen = "setup" | "loading" | "main" | "settings" | "templates";
 
 export const screen = writable<AppScreen>("setup");
 export const notes = writable<Note[]>([]);
