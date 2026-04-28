@@ -359,22 +359,25 @@
         </label>
       </section>
 
-      <footer class="actions">
-        <div class="messages">
-          {#if error}
-            <p class="error">{error}</p>
-          {:else if notice}
-            <p class="notice">{notice}</p>
-          {/if}
-        </div>
-        <button class="btn btn-ghost" onclick={cancel} disabled={!dirty || saving}>Anuluj</button>
-        <button class="btn btn-outline" onclick={restoreDefaults} disabled={saving}>Przywróć domyślne</button>
-        <button class="btn btn-solid" onclick={save} disabled={!dirty || saving}>
-          {saving ? "Zapisywanie…" : "Zapisz"}
-        </button>
-      </footer>
     {/if}
   </div>
+
+  {#if draft}
+    <footer class="actions">
+      <div class="messages">
+        {#if error}
+          <p class="error">{error}</p>
+        {:else if notice}
+          <p class="notice">{notice}</p>
+        {/if}
+      </div>
+      <button class="btn btn-ghost" onclick={cancel} disabled={!dirty || saving}>Anuluj</button>
+      <button class="btn btn-outline" onclick={restoreDefaults} disabled={saving}>Przywróć domyślne</button>
+      <button class="btn btn-solid" onclick={save} disabled={!dirty || saving}>
+        {saving ? "Zapisywanie…" : "Zapisz"}
+      </button>
+    </footer>
+  {/if}
 </div>
 
 <style>
@@ -433,7 +436,6 @@
   .body {
     flex: 1;
     overflow-y: auto;
-    padding-bottom: 72px;
   }
 
   .loading {
@@ -641,8 +643,6 @@
   }
 
   .actions {
-    position: sticky;
-    bottom: 0;
     display: flex;
     align-items: center;
     justify-content: flex-end;
@@ -650,6 +650,7 @@
     padding: 12px 20px;
     border-top: 1px solid var(--border);
     background: var(--bg);
+    flex-shrink: 0;
   }
 
   .messages {
