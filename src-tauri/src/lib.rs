@@ -44,12 +44,14 @@ pub fn run() {
             app.manage(WhisperState(Arc::new(Mutex::new(None))));
             app.manage(RecorderState(Mutex::new(None)));
             app.manage(NotesState(Mutex::new(NotesStore::new(&data_dir))));
-            app.manage(AudioLevelState(Arc::new(Mutex::new(VecDeque::with_capacity(
-                recorder::LEVEL_HISTORY_SIZE,
-            )))));
+            app.manage(AudioLevelState(Arc::new(Mutex::new(
+                VecDeque::with_capacity(recorder::LEVEL_HISTORY_SIZE),
+            ))));
             app.manage(LlmState(Arc::new(Mutex::new(None))));
             app.manage(TemplatesState(Mutex::new(TemplatesStore::new(&data_dir))));
-            app.manage(KvCacheState(Mutex::new(kv_cache::KvCacheIndex::new(&data_dir))));
+            app.manage(KvCacheState(Mutex::new(kv_cache::KvCacheIndex::new(
+                &data_dir,
+            ))));
 
             Ok(())
         })
@@ -73,11 +75,15 @@ pub fn run() {
             commands::update_filled_value,
             commands::reparse_note,
             commands::check_llm_model_exists,
+            commands::get_llm_model_variants,
             commands::download_llm_model,
+            commands::download_llm_model_variant,
+            commands::delete_llm_model_variant,
             commands::load_llm_model,
             commands::is_llm_loaded,
             commands::unload_llm_model,
             commands::get_settings,
+            commands::get_default_settings,
             commands::set_settings,
             commands::get_templates,
             commands::add_template,

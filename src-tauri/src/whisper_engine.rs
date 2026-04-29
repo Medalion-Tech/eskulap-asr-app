@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+use crate::settings::{AsrSettings, AsrStrategy};
+
 #[derive(Clone)]
 pub struct WhisperEngine {
     ctx: Arc<WhisperContext>,
@@ -36,9 +38,7 @@ impl WhisperEngine {
             crate::commands::BUILD_VARIANT,
         );
 
-        Ok(Self {
-            ctx: Arc::new(ctx),
-        })
+        Ok(Self { ctx: Arc::new(ctx) })
     }
 
     /// Transcribe audio PCM (16 kHz, mono, f32) with an optional progress callback (0–100).
@@ -49,6 +49,7 @@ impl WhisperEngine {
     pub fn transcribe<F>(
         &self,
         audio_pcm: &[f32],
+        settings: &AsrSettings,
         mut on_progress: F,
     ) -> Result<String, String>
     where
@@ -59,30 +60,42 @@ impl WhisperEngine {
             .create_state()
             .map_err(|e| format!("Failed to create whisper state: {}", e))?;
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some("pl"));
-        params.set_translate(false);
+        let strategy = match settings.strategy {
+            AsrStrategy::Greedy => SamplingStrategy::Greedy {
+                best_of: settings.greedy_best_of,
+            },
+            AsrStrategy::BeamSearch => SamplingStrategy::BeamSearch {
+                beam_size: settings.beam_size,
+                patience: -1.0,
+            },
+        };
+        let mut params = FullParams::new(strategy);
+        if settings.language == "auto" {
+            params.set_detect_language(true);
+            params.set_language(None);
+        } else {
+            params.set_language(Some(settings.language.as_str()));
+        }
+        params.set_translate(settings.translate);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_special(false);
         params.set_print_timestamps(false);
-        params.set_single_segment(true);
-        params.set_n_max_text_ctx(0);
+        params.set_single_segment(settings.single_segment);
+        params.set_n_max_text_ctx(settings.max_text_context);
+        params.set_temperature(settings.temperature);
+        if !settings.initial_prompt.trim().is_empty() {
+            params.set_initial_prompt(settings.initial_prompt.trim());
+        }
 
-        let n_threads = default_threads();
-        params.set_n_threads(n_threads);
+        params.set_n_threads(settings.threads);
 
         // ── Perf / quality tuning ─────────────────────────────────────────────
         // Don't carry encoder context from previous calls (each call is independent).
         params.set_no_context(true);
         // Suppress blank/silence tokens to avoid stray spaces.
         params.set_suppress_blank(true);
-        // Temperature = 0 → greedy, deterministic, and disables the temperature-
-        // fallback retry loop that can multiply wall-time on "hard" audio.
-        // Risk: no fallback on garbled audio; acceptable for clean medical dictation.
-        params.set_temperature(0.0);
-        // Turbo defaults n_max_text_ctx to 16 384; short dictations need ≤ 64.
-        params.set_n_max_text_ctx(64);
+        // Note: temperature and n_max_text_ctx are set above from user settings.
         // ─────────────────────────────────────────────────────────────────────
 
         // Dedupe progress emissions — whisper.cpp sometimes repeats the same
@@ -112,7 +125,7 @@ impl WhisperEngine {
             audio_seconds,
             elapsed.as_secs_f64(),
             ratio,
-            n_threads,
+            settings.threads,
             state.full_n_segments(),
         );
 
@@ -145,6 +158,7 @@ impl WhisperEngine {
     pub fn transcribe_chunked(
         &self,
         audio_pcm: &[f32],
+        settings: &AsrSettings,
         chunk_samples: usize,
         overlap_samples: usize,
         on_segment: impl Fn(String),
@@ -156,7 +170,7 @@ impl WhisperEngine {
             let end = (start + chunk_samples).min(audio_pcm.len());
             let chunk = &audio_pcm[start..end];
 
-            let segment_text = self.transcribe(chunk, |_| {})?;
+            let segment_text = self.transcribe(chunk, settings, |_| {})?;
             let trimmed = segment_text.trim().to_string();
 
             if !trimmed.is_empty() {

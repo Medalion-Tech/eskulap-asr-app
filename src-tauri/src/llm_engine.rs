@@ -9,9 +9,19 @@ use llama_cpp_4::model::params::LlamaModelParams;
 use llama_cpp_4::model::{AddBos, LlamaModel, Special};
 use llama_cpp_4::sampling::LlamaSampler;
 
-#[cfg(any(feature = "accel-metal", feature = "accel-vulkan", feature = "accel-cuda"))]
+use crate::settings::LlmSettings;
+
+#[cfg(any(
+    feature = "accel-metal",
+    feature = "accel-vulkan",
+    feature = "accel-cuda"
+))]
 const GPU_LAYERS: u32 = 999;
-#[cfg(not(any(feature = "accel-metal", feature = "accel-vulkan", feature = "accel-cuda")))]
+#[cfg(not(any(
+    feature = "accel-metal",
+    feature = "accel-vulkan",
+    feature = "accel-cuda"
+)))]
 const GPU_LAYERS: u32 = 0;
 
 /// Bump when GLOBAL_PREAMBLE or slot-format instructions change — invalidates
@@ -32,7 +42,6 @@ fn backend() -> Result<Arc<LlamaBackend>, String> {
 
 pub struct LlmEngine {
     model: LlamaModel,
-    n_ctx: u32,
 }
 
 unsafe impl Send for LlmEngine {}
@@ -66,10 +75,7 @@ impl LlmEngine {
         let model_params = LlamaModelParams::default().with_n_gpu_layers(GPU_LAYERS);
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| format!("Failed to load LLM model: {}", e))?;
-        Ok(Self {
-            model,
-            n_ctx: 8192,
-        })
+        Ok(Self { model })
     }
 
     /// Generate a completion given a fixed `prefix` (cacheable across calls) and
@@ -83,25 +89,28 @@ impl LlmEngine {
         &self,
         prefix: &str,
         suffix: &str,
+        settings: &LlmSettings,
         cache_entry: Option<&CachedPrefix>,
         save_cache_to: Option<&Path>,
-        max_tokens: u32,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<GenerateOutput, String> {
         let backend = backend()?;
-        let n_batch: u32 = 1024;
-        let mut ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(self.n_ctx))
+        let n_batch = settings.batch_size;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(settings.context_size))
             .with_n_batch(n_batch);
         // Flash attention is only meaningful on GPU-accelerated builds.
-        #[cfg(any(feature = "accel-metal", feature = "accel-vulkan", feature = "accel-cuda"))]
-        {
-            ctx_params = ctx_params.with_flash_attention(true);
-        }
+        #[cfg(any(
+            feature = "accel-metal",
+            feature = "accel-vulkan",
+            feature = "accel-cuda"
+        ))]
+        let ctx_params = ctx_params.with_flash_attention(settings.flash_attention);
         let mut ctx = self
             .model
             .new_context(&backend, ctx_params)
             .map_err(|e| format!("Failed to create LLM context: {}", e))?;
+        ctx.set_n_threads(settings.threads, settings.batch_threads);
 
         // Tokenize prefix and suffix separately. Prefix gets BOS (start of stream).
         let prefix_tokens = self
@@ -116,10 +125,10 @@ impl LlmEngine {
         let n_prefix = prefix_tokens.len() as i32;
         let n_suffix = suffix_tokens.len() as i32;
         let n_total = n_prefix + n_suffix;
-        if n_total as u32 >= self.n_ctx {
+        if n_total as u32 >= settings.context_size {
             return Err(format!(
                 "Prompt too long: {} tokens vs {} ctx",
-                n_total, self.n_ctx
+                n_total, settings.context_size
             ));
         }
 
@@ -148,16 +157,16 @@ impl LlmEngine {
                         other,
                         n_prefix
                     );
-                    decode_tokens(&mut ctx, &mut batch, &prefix_tokens, 0, false)?;
+                    decode_tokens(&mut ctx, &mut batch, &prefix_tokens, 0, false, n_batch)?;
                 }
                 Err(e) => {
                     log::warn!("KV cache load failed ({}); decoding prefix", e);
-                    decode_tokens(&mut ctx, &mut batch, &prefix_tokens, 0, false)?;
+                    decode_tokens(&mut ctx, &mut batch, &prefix_tokens, 0, false, n_batch)?;
                 }
             }
         } else {
             // Cache miss — decode the prefix normally.
-            decode_tokens(&mut ctx, &mut batch, &prefix_tokens, 0, false)?;
+            decode_tokens(&mut ctx, &mut batch, &prefix_tokens, 0, false, n_batch)?;
             if let Some(save_path) = save_cache_to {
                 match try_save_session(&ctx, save_path, &prefix_tokens) {
                     Ok(()) => {
@@ -175,13 +184,20 @@ impl LlmEngine {
         }
 
         // --- Suffix phase: decode into the same context, last token needs logits ---
-        decode_tokens(&mut ctx, &mut batch, &suffix_tokens, n_prefix, true)?;
+        decode_tokens(
+            &mut ctx,
+            &mut batch,
+            &suffix_tokens,
+            n_prefix,
+            true,
+            n_batch,
+        )?;
 
         // --- Sampling loop ---
         let mut sampler = LlamaSampler::chain_simple([
-            LlamaSampler::temp(0.4),
-            LlamaSampler::top_p(0.9, 1),
-            LlamaSampler::dist(1234),
+            LlamaSampler::temp(settings.temperature),
+            LlamaSampler::top_p(settings.top_p, 1),
+            LlamaSampler::dist(settings.seed),
         ]);
 
         let mut output = String::new();
@@ -189,7 +205,7 @@ impl LlmEngine {
         let mut decoded_buf: Vec<u8> = Vec::new();
         let mut new_tokens = 0u32;
 
-        let max_total = (n_total as u32 + max_tokens).min(self.n_ctx);
+        let max_total = (n_total as u32 + settings.max_tokens).min(settings.context_size);
 
         while (n_cur as u32) < max_total {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
@@ -247,13 +263,12 @@ fn decode_tokens(
     tokens: &[llama_cpp_4::token::LlamaToken],
     start_pos: i32,
     last_needs_logits: bool,
+    chunk_size: u32,
 ) -> Result<(), String> {
     if tokens.is_empty() {
         return Ok(());
     }
-    let chunk_size = batch.n_tokens().max(0) as usize; // We re-use the configured n_batch.
-    // chunk_size from the batch object can be 0 when the batch is fresh; fall back to a safe chunk.
-    let chunk_size = if chunk_size == 0 { 512 } else { chunk_size };
+    let chunk_size = chunk_size.max(1) as usize;
     let last_idx = tokens.len() - 1;
 
     for (ci, chunk) in tokens.chunks(chunk_size).enumerate() {
@@ -267,7 +282,8 @@ fn decode_tokens(
                 .add(*tok, abs_pos, &[0], needs_logits)
                 .map_err(|e| format!("batch.add failed: {}", e))?;
         }
-        ctx.decode(batch).map_err(|e| format!("decode failed: {}", e))?;
+        ctx.decode(batch)
+            .map_err(|e| format!("decode failed: {}", e))?;
     }
     Ok(())
 }

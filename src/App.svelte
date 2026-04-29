@@ -5,6 +5,7 @@
   import SetupScreen from "./lib/SetupScreen.svelte";
   import MainScreen from "./lib/MainScreen.svelte";
   import SettingsScreen from "./lib/SettingsScreen.svelte";
+  import TemplatesScreen from "./lib/TemplatesScreen.svelte";
 
   onMount(async () => {
     try {
@@ -58,6 +59,8 @@
   </div>
 {:else if $screen === "settings"}
   <SettingsScreen />
+{:else if $screen === "templates"}
+  <TemplatesScreen />
 {:else}
   <MainScreen />
 {/if}
