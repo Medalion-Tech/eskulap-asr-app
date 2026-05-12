@@ -34,6 +34,7 @@ export const isRecording = writable(false);
 export const isTranscribing = writable(false);
 export const isGenerating = writable(false);
 export const generationPreview = writable("");
+export const transcriptionDone = writable(false);
 export const recordingSeconds = writable(0);
 export const downloadProgress = writable(0);
 export const downloadStage = writable<string>("");
