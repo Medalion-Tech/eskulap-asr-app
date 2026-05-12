@@ -53,9 +53,22 @@
       </span>
     {/if}
     <button
-      class="settings-btn"
+      class="icon-btn"
+      onclick={() => ($screen = "templates")}
+      title="Szablony"
+      aria-label="Szablony"
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 2h9l5 5v15H6z" />
+        <path d="M14 2v6h6" />
+        <path d="M9 13h6" />
+        <path d="M9 17h6" />
+      </svg>
+    </button>
+    <button
+      class="icon-btn"
       onclick={() => ($screen = "settings")}
-      title="Ustawienia i szablony"
+      title="Ustawienia"
       aria-label="Ustawienia"
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -136,7 +149,7 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
   }
 
-  .settings-btn {
+  .icon-btn {
     width: 28px;
     height: 28px;
     display: flex;
@@ -153,7 +166,7 @@
       color var(--duration-fast) var(--easing);
   }
 
-  .settings-btn:hover {
+  .icon-btn:hover {
     background: var(--bg-hover);
     color: var(--text);
   }
