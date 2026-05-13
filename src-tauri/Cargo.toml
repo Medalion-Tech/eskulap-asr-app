@@ -1,6 +1,6 @@
 [package]
 name = "eskulap-asr"
-version = "0.4.2"
+version = "0.4.3"
 description = "Desktop wrapper for Eskulap ASR medical speech recognition"
 authors = ["Lion AI"]
 license = "Apache-2.0"
@@ -50,6 +50,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 whisper-rs = { version = "0.16" }
 llama-cpp-4 = { version = "0.2.46", default-features = false }
 num_cpus = "1.16"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 
 # NOTE: mimalloc (was: target.cfg(windows).dependencies) removed in v0.3.14.
 # On Windows with profile.release.lto = "fat", mimalloc-override's forced
