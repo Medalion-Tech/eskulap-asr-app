@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import { screen } from "./stores";
+  import MemoryBadge from "./MemoryBadge.svelte";
 
   interface AcceleratorInfo {
     backend: string;
@@ -13,12 +14,18 @@
   }
 
   let accel: AcceleratorInfo | null = $state(null);
+  let version: string = $state("");
 
   onMount(async () => {
     try {
       accel = await invoke<AcceleratorInfo>("get_accelerator_info");
     } catch (e) {
       console.error("Failed to get accelerator info:", e);
+    }
+    try {
+      version = await invoke<string>("get_app_version");
+    } catch (e) {
+      console.error("Failed to get app version:", e);
     }
   });
 
@@ -40,6 +47,9 @@
 <header class="app-header">
   <div class="title-group">
     <span class="app-name">Eskulap ASR</span>
+    {#if version}
+      <span class="version-badge" title="Wersja aplikacji">v{version}</span>
+    {/if}
   </div>
   <div class="right">
     {#if accel}
@@ -52,6 +62,7 @@
         {accel.backend}
       </span>
     {/if}
+    <MemoryBadge />
     <button
       class="icon-btn"
       onclick={() => ($screen = "templates")}
@@ -104,6 +115,20 @@
     font-weight: 600;
     color: var(--text);
     letter-spacing: -0.01em;
+  }
+
+  .version-badge {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    user-select: none;
+    font-variant-numeric: tabular-nums;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
   }
 
   .right {

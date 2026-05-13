@@ -1,5 +1,6 @@
 use crate::ast::{self, FilledTemplate, FilledValue};
 use crate::llm_engine::{build_prompt_split, LlmEngine};
+use crate::memory_monitor::{self, MemorySnapshot};
 use crate::model_manager::{self, DownloadProgress};
 use crate::notes::{Note, NotesStore};
 use crate::recorder::{AudioRecorder, LevelHistory};
@@ -211,7 +212,7 @@ pub fn load_model(
     if !path.exists() {
         return Err("Model not downloaded yet".to_string());
     }
-    let engine = WhisperEngine::new(&path)?;
+    let engine = memory_monitor::record_asr_load(|| WhisperEngine::new(&path))?;
     let mut guard = whisper.0.lock().map_err(|e| e.to_string())?;
     *guard = Some(engine);
     log::info!("Whisper model loaded successfully");
@@ -496,6 +497,7 @@ pub fn delete_llm_model_variant(
         let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
             *guard = None;
+            memory_monitor::clear_llm_footprint();
             log::info!("LLM model unloaded after deleting active model variant");
         }
     }
@@ -511,7 +513,7 @@ pub fn load_llm_model(
     if !path.exists() {
         return Err("LLM model not downloaded yet".to_string());
     }
-    let engine = LlmEngine::new(&path)?;
+    let engine = memory_monitor::record_llm_load(|| LlmEngine::new(&path))?;
     let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
     *guard = Some(engine);
     log::info!("LLM model loaded successfully");
@@ -527,7 +529,22 @@ pub fn is_llm_loaded(llm: tauri::State<'_, LlmState>) -> bool {
 pub fn unload_llm_model(llm: tauri::State<'_, LlmState>) -> Result<(), String> {
     let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
     *guard = None;
+    memory_monitor::clear_llm_footprint();
     log::info!("LLM model unloaded");
+    Ok(())
+}
+
+// ---- App version + memory monitor ----
+
+#[tauri::command]
+pub fn get_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+#[tauri::command]
+pub fn subscribe_memory_stats(on_update: Channel<MemorySnapshot>) -> Result<(), String> {
+    let backend = get_accelerator_info().backend;
+    memory_monitor::spawn_monitor(on_update, backend);
     Ok(())
 }
 
@@ -561,6 +578,7 @@ pub fn set_settings(
         let mut guard = llm.0.lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
             *guard = None;
+            memory_monitor::clear_llm_footprint();
             llm_unloaded = true;
             log::info!("LLM model unloaded after settings change");
         }
@@ -691,7 +709,7 @@ pub async fn generate_from_template(
             }
             let engine_arc = llm.0.clone();
             tokio::task::spawn_blocking(move || -> Result<(), String> {
-                let engine = LlmEngine::new(&path)?;
+                let engine = memory_monitor::record_llm_load(|| LlmEngine::new(&path))?;
                 let mut guard = engine_arc.lock().map_err(|e| e.to_string())?;
                 *guard = Some(engine);
                 log::info!("LLM model lazy-loaded");

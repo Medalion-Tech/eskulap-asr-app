@@ -3,6 +3,7 @@ mod builtin_templates;
 mod commands;
 mod kv_cache;
 mod llm_engine;
+mod memory_monitor;
 mod model_manager;
 mod notes;
 mod recorder;
@@ -91,6 +92,8 @@ pub fn run() {
             commands::delete_template,
             commands::reset_builtin_templates,
             commands::generate_from_template,
+            commands::get_app_version,
+            commands::subscribe_memory_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
